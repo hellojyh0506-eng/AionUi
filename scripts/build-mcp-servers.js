@@ -12,6 +12,7 @@
  */
 
 const esbuild = require('esbuild');
+const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -24,6 +25,15 @@ const SHARED_OPTIONS = {
   tsconfig: path.join(ROOT, 'tsconfig.json'),
   loader: { '.wasm': 'empty' },
 };
+
+function copyBundledChromeDevtoolsMcp() {
+  const pkgRoot = path.dirname(require.resolve('chrome-devtools-mcp/package.json', { paths: [ROOT] }));
+  const targetDir = path.join(ROOT, 'out/main/chrome-devtools-mcp');
+  fs.rmSync(targetDir, { recursive: true, force: true });
+  fs.mkdirSync(targetDir, { recursive: true });
+  fs.cpSync(path.join(pkgRoot, 'build'), path.join(targetDir, 'build'), { recursive: true });
+  fs.copyFileSync(path.join(pkgRoot, 'package.json'), path.join(targetDir, 'package.json'));
+}
 
 async function main() {
   await Promise.all([
@@ -38,6 +48,7 @@ async function main() {
       outfile: path.join(ROOT, 'out/main/builtin-mcp-browser.js'),
     }),
   ]);
+  copyBundledChromeDevtoolsMcp();
 }
 
 main().catch((err) => {

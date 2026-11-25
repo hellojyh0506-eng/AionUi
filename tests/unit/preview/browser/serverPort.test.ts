@@ -9,6 +9,7 @@ import {
   buildMcpSpawnCommand,
   resolveBridgeToken,
   resolveBrowserUrl,
+  resolveLocalChromeDevtoolsEntrypoint,
 } from '@/process/resources/builtinMcp/browserServerPort';
 
 describe('resolveBrowserUrl', () => {
@@ -143,5 +144,32 @@ describe('buildMcpSpawnCommand — issue #3883', () => {
     const { args } = buildMcpSpawnCommand({ platform: 'win32', version, browserUrl });
     expect(args).not.toContain('chrome-devtools-mcp@latest');
     expect(args).toContain(`chrome-devtools-mcp@${version}`);
+  });
+
+  it('launches bundled chrome-devtools-mcp directly with node when available offline', () => {
+    const localEntrypoint = 'C:\\Program Files\\EthanToken\\resources\\app.asar.unpacked\\out\\main\\chrome-devtools-mcp\\build\\src\\index.js';
+    const { command, args } = buildMcpSpawnCommand({
+      platform: 'win32',
+      version,
+      browserUrl,
+      localEntrypoint,
+      nodeExecPath: 'C:\\managed\\node.exe',
+    });
+    expect(command).toBe('C:\\managed\\node.exe');
+    expect(args).toEqual([localEntrypoint, '--browser-url', browserUrl]);
+  });
+
+  it('resolves unpacked bundled entrypoint and skips app.asar paths', () => {
+    const unpackedHit = resolveLocalChromeDevtoolsEntrypoint(
+      'C:\\app\\resources\\app.asar.unpacked\\out\\main',
+      (p) => p.endsWith('index.js')
+    );
+    expect(unpackedHit).toContain('chrome-devtools-mcp');
+
+    const asarMiss = resolveLocalChromeDevtoolsEntrypoint(
+      'C:\\app\\resources\\app.asar\\out\\main',
+      () => true
+    );
+    expect(asarMiss).toBeNull();
   });
 });

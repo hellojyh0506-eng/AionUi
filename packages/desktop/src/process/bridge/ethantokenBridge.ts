@@ -856,8 +856,11 @@ async function attachEthanTokenSkillToAssistants(): Promise<void> {
               },
             };
             await httpRequest<Assistant>('PUT', `/api/assistants/${encodeURIComponent(assistant.id)}`, builtinPayload);
-            handledIds.add(assistant.id);
-            changed = true;
+            // Keep builtin assistants eligible until image-gen MCP is also attached after sign-in.
+            if (enabledImageGenId) {
+              handledIds.add(assistant.id);
+              changed = true;
+            }
           } catch (err) {
             console.warn(`[EthanToken] attach defaults to builtin assistant ${assistant.id} deferred:`, err);
           }
@@ -972,6 +975,7 @@ export function initEthanTokenBridge(): void {
         lastSyncedAt: Date.now(),
       };
       const nextStore = upsertAccountInStore(updated, true);
+      void ensureEthanTokenSkillInstalled();
       return toAccountState(nextStore);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

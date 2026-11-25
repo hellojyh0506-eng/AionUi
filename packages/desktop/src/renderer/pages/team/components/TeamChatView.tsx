@@ -2,9 +2,11 @@ import { ipcBridge } from '@/common';
 import type { ChatFileRef } from '@/common/types/chatFile';
 import type { IConversationMcpStatus, IProvider, TChatConversation, TProviderWithModel } from '@/common/config/storage';
 import { Message, Spin } from '@arco-design/web-react';
-import React, { Suspense, useCallback } from 'react';
+import React, { Suspense, useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useSWRConfig } from 'swr';
 import { useAionrsModelSelection } from '@/renderer/pages/conversation/platforms/aionrs/useAionrsModelSelection';
+import { pickDefaultAionrsProviderModel } from './teamCreateModelResolver';
 import { isLegacyReadOnlyConversationType } from '@/renderer/pages/conversation/utils/conversationRuntime';
 import type { ITeamRunAck } from '@/common/types/team/teamTypes';
 import {
@@ -74,16 +76,35 @@ const AionrsTeamChat: React.FC<{
   loadedMcpServers,
   loadedMcpStatuses,
 }) => {
+  const { mutate } = useSWRConfig();
   const onSelectModel = useCallback(
     async (_provider: IProvider, modelName: string) => {
       const selected = { ..._provider, use_model: modelName } as TProviderWithModel;
       const ok = await ipcBridge.conversation.update.invoke({ id: conversation.id, updates: { model: selected } });
+      if (ok) {
+        void mutate(['team-conversation', conversation.id]);
+      }
       return Boolean(ok);
     },
-    [conversation.id]
+    [conversation.id, mutate]
   );
 
   const modelSelection = useAionrsModelSelection({ initialModel: conversation.model, onSelectModel });
+  const healedDefaultRef = useRef(false);
+
+  useEffect(() => {
+    healedDefaultRef.current = false;
+  }, [conversation.id]);
+
+  useEffect(() => {
+    if (healedDefaultRef.current) return;
+    const currentUseModel = conversation.model?.use_model;
+    if (currentUseModel && currentUseModel !== 'default') return;
+    const picked = pickDefaultAionrsProviderModel(modelSelection.providers);
+    if (!picked) return;
+    healedDefaultRef.current = true;
+    void modelSelection.handleSelectModel(picked.provider, picked.model);
+  }, [conversation.id, conversation.model?.use_model, modelSelection]);
 
   return (
     <AionrsChat

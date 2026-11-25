@@ -30,7 +30,12 @@
  */
 
 import { spawn } from 'node:child_process';
-import { buildMcpSpawnCommand, resolveBridgeToken, resolveBrowserUrl } from './browserServerPort';
+import {
+  buildMcpSpawnCommand,
+  resolveBridgeToken,
+  resolveBrowserUrl,
+  resolveLocalChromeDevtoolsEntrypoint,
+} from './browserServerPort';
 
 /**
  * stdio MCP 服务器的 stdout 是协议通道，任何附加输出都会破坏握手。
@@ -147,10 +152,13 @@ const CHROME_DEVTOOLS_MCP_VERSION = '0.16.0';
  * cmd.exe /c is the approach Node's own docs recommend: each argument keeps its individual
  * escaping and DEP0190 is not triggered.
  */
+const localEntrypoint = resolveLocalChromeDevtoolsEntrypoint(__dirname);
 const spawnPlan = buildMcpSpawnCommand({
   platform: process.platform,
   version: CHROME_DEVTOOLS_MCP_VERSION,
   browserUrl,
+  localEntrypoint,
+  nodeExecPath: process.execPath,
 });
 
 const child = spawn(spawnPlan.command, spawnPlan.args, {

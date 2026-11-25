@@ -5,7 +5,51 @@
  */
 
 import { ipcBridge } from '@/common';
+import type { IProvider } from '@/common/config/storage';
 import { assistantRuntimeKey, type AssistantDetail } from '@/common/types/agent/assistantTypes';
+
+const PREFERRED_AIONRS_MODELS = [
+  'deepseek-v4.1-flash',
+  'gpt-6.2-sol-fast',
+  'claude-sonnet-5-5',
+  'gemini-3.8-flash',
+  'gpt-6.2-sol',
+];
+
+function getEnabledModelsForProvider(provider: IProvider): string[] {
+  const models = Array.isArray(provider.models) ? provider.models : [];
+  return models.filter((modelName) => Boolean(modelName) && provider.model_enabled?.[modelName] !== false);
+}
+
+/**
+ * Pick the best enabled provider+model pair for an aionrs team slot.
+ * Filters out disabled providers, disabled models, and Google Auth providers
+ * (which aioncore/aionrs does not support).
+ */
+export function pickDefaultAionrsProviderModel(
+  providers: IProvider[]
+): { provider: IProvider; model: string } | undefined {
+  const eligibleProviders = providers.filter(
+    (p) => p.enabled !== false && !p.platform?.toLowerCase().includes('gemini-with-google-auth')
+  );
+
+  for (const preferred of PREFERRED_AIONRS_MODELS) {
+    for (const provider of eligibleProviders) {
+      if (getEnabledModelsForProvider(provider).includes(preferred)) {
+        return { provider, model: preferred };
+      }
+    }
+  }
+
+  for (const provider of eligibleProviders) {
+    const firstModel = getEnabledModelsForProvider(provider)[0];
+    if (firstModel) {
+      return { provider, model: firstModel };
+    }
+  }
+
+  return undefined;
+}
 
 /**
  * Resolve the `model` value a team agent should send to `POST /api/teams`.
@@ -101,5 +145,14 @@ async function resolveGeminiDefaultModel(): Promise<string> {
 }
 
 async function resolveAionrsDefaultModel(): Promise<string> {
+  try {
+    const providers = (await ipcBridge.mode.listProviders.invoke()) ?? [];
+    const picked = pickDefaultAionrsProviderModel(providers);
+    if (picked) {
+      return picked.model;
+    }
+  } catch {
+    // Fall back when provider list is unavailable during initial setup or tests.
+  }
   return 'default';
 }

@@ -15,6 +15,9 @@
  * top-level side effects (it spawns a child), so it cannot be imported by tests.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 const DEFAULT_CDP_HOST = '127.0.0.1';
 
 export type ResolveBrowserUrlDeps = {
@@ -97,11 +100,35 @@ export const resolveBridgeToken = (deps: ResolveBrowserUrlDeps): string | null =
  * through cmd.exe /c rather than shell: true; see browserServer.ts for the full rationale
  * (DEP0190, plus browserUrl would be parsed by the shell).
  */
+export const resolveLocalChromeDevtoolsEntrypoint = (
+  baseDir: string,
+  existsSyncFn: (filePath: string) => boolean = fs.existsSync
+): string | null => {
+  const candidates = [
+    path.join(baseDir, 'chrome-devtools-mcp', 'build', 'src', 'index.js'),
+    path.resolve(baseDir, '..', '..', 'node_modules', 'chrome-devtools-mcp', 'build', 'src', 'index.js'),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate.includes('app.asar' + path.sep) && existsSyncFn(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
 export const buildMcpSpawnCommand = (deps: {
   platform: string;
   version: string;
   browserUrl: string;
+  localEntrypoint?: string | null;
+  nodeExecPath?: string;
 }): { command: string; args: string[] } => {
+  if (deps.localEntrypoint) {
+    return {
+      command: deps.nodeExecPath || process.execPath,
+      args: [deps.localEntrypoint, '--browser-url', deps.browserUrl],
+    };
+  }
   const mcpArgs = ['-y', `chrome-devtools-mcp@${deps.version}`, '--browser-url', deps.browserUrl];
   return deps.platform === 'win32'
     ? { command: 'cmd.exe', args: ['/c', 'npx', ...mcpArgs] }

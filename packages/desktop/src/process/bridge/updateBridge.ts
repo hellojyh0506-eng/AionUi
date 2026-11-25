@@ -54,19 +54,15 @@ type GitHubReleaseApi = {
   assets?: GitHubReleaseApiAsset[];
 };
 
-/** Parameters for auto-update check via electron-updater */
-interface AutoUpdateCheckParams {
-  /** Whether to include prerelease/dev builds in update check */
-  includePrerelease?: boolean;
-}
-
 const DEFAULT_REPO = 'hellojyh0506-eng/AionUi';
 const DEFAULT_USER_AGENT = 'AionUi';
 const ALLOWED_ASSET_EXTS = new Set(['.exe', '.msi', '.dmg', '.zip', '.deb', '.rpm']);
-const CDN_HOST = 'static.aionui.com';
-const CDN_BASE_URL = `https://${CDN_HOST}/releases`;
+const CDN_HOST = 'ethantoken.top';
+const CDN_BASE_URL = `https://${CDN_HOST}/downloads/releases`;
 const ALLOWED_DOWNLOAD_HOSTS = new Set<string>([
   CDN_HOST,
+  'api.ethantoken.top',
+  'api.2005716.xyz',
   'github.com',
   'objects.githubusercontent.com',
   'github-releases.githubusercontent.com',
@@ -683,6 +679,33 @@ export function initUpdateBridge(): void {
         }
 
         const includePrerelease = Boolean(params?.includePrerelease);
+
+        if (!includePrerelease) {
+          try {
+            const manifest = await fetchCdnManifest();
+            const mapped = mapCdnManifestToRelease(manifest, repo);
+            if (mapped) {
+              const enrichment = await fetchReleaseNotesEnrichment(repo, mapped.version);
+              return {
+                success: true,
+                data: {
+                  currentVersion,
+                  updateAvailable: semver.gt(mapped.version, currentSemver),
+                  latest: {
+                    ...mapped,
+                    name: enrichment.name ?? mapped.name,
+                    body: enrichment.body ?? mapped.body,
+                    htmlUrl: enrichment.htmlUrl ?? mapped.htmlUrl,
+                    publishedAt: enrichment.publishedAt ?? mapped.publishedAt,
+                  },
+                },
+              };
+            }
+          } catch (cdnErr) {
+            log.warn('[manual-update] CDN manifest check failed, falling back to GitHub Releases:', cdnErr);
+          }
+        }
+
         const releases = await fetchGitHubReleases(repo);
         const eligible = releases.filter((rel) => rel && !rel.draft && (includePrerelease || !rel.prerelease));
         if (eligible.length === 0) {
@@ -812,14 +835,40 @@ export function initUpdateBridge(): void {
     }
   );
 
-  // Auto-updater IPC handlers (disabled in EthanToken build to prevent upstream CDN overwrite)
   ipcBridge.autoUpdate.check.provider(
     async (): Promise<{
       success: boolean;
       data?: { updateInfo?: { version: string; releaseDate?: string; releaseNotes?: string } };
       msg?: string;
     }> => {
-      return { success: true, data: {} };
+      try {
+        const result = await autoUpdaterService.checkForUpdates();
+        const info = result.updateInfo;
+        const releaseNotes =
+          typeof info?.releaseNotes === 'string'
+            ? info.releaseNotes
+            : Array.isArray(info?.releaseNotes)
+              ? info.releaseNotes
+                  .map((entry) => entry?.note)
+                  .filter((note): note is string => Boolean(note))
+                  .join('\n')
+              : undefined;
+        return {
+          success: result.success,
+          data: info
+            ? {
+                updateInfo: {
+                  version: info.version,
+                  releaseDate: info.releaseDate,
+                  releaseNotes,
+                },
+              }
+            : {},
+          msg: result.error,
+        };
+      } catch (err: unknown) {
+        return { success: false, msg: err instanceof Error ? err.message : String(err) };
+      }
     }
   );
 

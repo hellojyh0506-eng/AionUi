@@ -7,12 +7,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getAssistantMock = vi.fn();
+const listProvidersMock = vi.fn();
 
 vi.mock('@/common', () => ({
   ipcBridge: {
     assistants: {
       get: {
         invoke: (...args: unknown[]) => getAssistantMock(...args),
+      },
+    },
+    mode: {
+      listProviders: {
+        invoke: (...args: unknown[]) => listProvidersMock(...args),
       },
     },
   },
@@ -23,6 +29,8 @@ import { resolveDefaultTeamAgentModel } from '@/renderer/pages/team/components/t
 describe('resolveDefaultTeamAgentModel', () => {
   beforeEach(() => {
     getAssistantMock.mockReset();
+    listProvidersMock.mockReset();
+    listProvidersMock.mockResolvedValue([]);
   });
 
   it('prefers the assistant fixed default model over agent-level fallbacks', async () => {
@@ -133,7 +141,29 @@ describe('resolveDefaultTeamAgentModel', () => {
     ).resolves.toBe('');
   });
 
-  it('keeps the default placeholder for aionrs assistants', async () => {
+  it('prefers an enabled provider model for aionrs assistants over the default placeholder', async () => {
+    listProvidersMock.mockResolvedValue([
+      {
+        id: 'ethantoken',
+        name: 'EthanToken',
+        platform: 'new-api',
+        base_url: 'https://ethantoken.top/v1',
+        api_key: 'sk-test',
+        enabled: true,
+        models: ['gpt-6.2-sol-fast', 'deepseek-v4.1-flash'],
+      },
+    ]);
+
+    await expect(
+      resolveDefaultTeamAgentModel({
+        assistant_backend: 'aionrs',
+      })
+    ).resolves.toBe('deepseek-v4.1-flash');
+  });
+
+  it('falls back to the default placeholder for aionrs assistants when no provider model is enabled', async () => {
+    listProvidersMock.mockResolvedValue([]);
+
     await expect(
       resolveDefaultTeamAgentModel({
         assistant_backend: 'aionrs',

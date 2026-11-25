@@ -306,7 +306,7 @@ const AionrsSendBox: React.FC<{
         }
 
         markSendFailed({ kind: 'ordinary', reason: errorMessage });
-        Message.error(errorMessage);
+        Message.error({ id: 'aionrs-send-error', content: errorMessage });
         throw error;
       }
     },

@@ -128,7 +128,7 @@ type FetchScenario = {
 const stubFetch = (scenario: FetchScenario) => {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.startsWith('https://static.aionui.com/releases/latest')) {
+    if (url.startsWith('https://ethantoken.top/downloads/releases/latest')) {
       if (!scenario.cdn) throw new Error('unexpected CDN request');
       return scenario.cdn();
     }
@@ -164,7 +164,7 @@ describe('update.check CDN-first', () => {
     expect(res.data?.latest?.body).toBe('changelog body');
     expect(res.data?.latest?.htmlUrl).toBe('https://github.com/iOfficeAI/AionUi/releases/tag/v2.1.45');
     expect(res.data?.latest?.recommendedAsset?.url).toBe(
-      'https://static.aionui.com/releases/2.1.45/AionUi-2.1.45-mac-arm64.dmg'
+      'https://ethantoken.top/downloads/releases/2.1.45/AionUi-2.1.45-mac-arm64.dmg'
     );
   });
 
@@ -201,15 +201,16 @@ describe('update.check CDN-first', () => {
     expect(res.data?.updateAvailable).toBe(false);
   });
 
-  it('fails the check when the CDN manifest request fails', async () => {
+  it('falls back to GitHub Releases when the CDN manifest request fails', async () => {
     stubFetch({ cdn: () => new Response('nope', { status: 502 }), github: () => jsonResponse(GITHUB_RELEASES) });
     const handler = await getCheckHandler();
     const res = await handler({});
-    expect(res.success).toBe(false);
+    expect(res.success).toBe(true);
+    expect(res.data?.latest?.version).toBe('2.1.45');
   });
 
-  it('fails the check when the CDN manifest is malformed', async () => {
-    stubFetch({ cdn: () => ymlResponse('not: [valid'), github: () => jsonResponse(GITHUB_RELEASES) });
+  it('fails the check when both CDN manifest and GitHub Releases fail', async () => {
+    stubFetch({ cdn: () => ymlResponse('not: [valid') });
     const handler = await getCheckHandler();
     const res = await handler({});
     expect(res.success).toBe(false);
