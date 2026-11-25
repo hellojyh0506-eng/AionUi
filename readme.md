@@ -1,41 +1,50 @@
 <p align="center">
-  <img src="./resources/aionui-banner-1.png" alt="AionUi - Cowork with AI Agents" width="100%">
+  <img src="./resources/aionui-banner-1.png" alt="EthanToken Desktop (based on AionUi)" width="100%">
+</p>
+
+<h1 align="center">EthanToken Desktop (基于 AionUi 深度定制版)</h1>
+
+<p align="center">
+  <strong>开箱即用的国内直连 AI Agent 桌面端 · 浏览器一键登录授权 · 多账号秒切 · 内置生图 / 生视频技能与工具</strong><br>
+  <em>基于开源项目 <a href="https://github.com/iOfficeAI/AionUi">iOfficeAI/AionUi</a> (Apache-2.0) 深度定制 · 屏蔽遥测 · 原生适配 <a href="https://ethantoken.top">EthanToken</a></em>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/v/release/iOfficeAI/AionUi?style=flat-square&color=32CD32" alt="Version">
+  <a href="https://ethantoken.top/download" target="_blank">
+    <img src="https://img.shields.io/badge/⬇️%20官网下载-EthanToken%20Desktop-dc6d4a?style=for-the-badge" alt="官网下载" height="44">
+  </a>
+  &nbsp;
+  <a href="https://github.com/hellojyh0506-eng/AionUi/releases" target="_blank">
+    <img src="https://img.shields.io/badge/GitHub-Releases-13111c?style=for-the-badge&logo=github&logoColor=white" alt="GitHub Releases" height="44">
+  </a>
+  &nbsp;
+  <a href="https://qm.qq.com/q/Lq38Kn6bMQ" target="_blank">
+    <img src="https://img.shields.io/badge/QQ交流群-1134610506-1677ff?style=for-the-badge&logo=tencentqq&logoColor=white" alt="QQ群 1134610506" height="44">
+  </a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/v/release/hellojyh0506-eng/AionUi?style=flat-square&color=dc6d4a" alt="Version">
   &nbsp;
   <img src="https://img.shields.io/badge/license-Apache--2.0-32CD32?style=flat-square&logo=apache&logoColor=white" alt="License">
   &nbsp;
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-6C757D?style=flat-square&logo=linux&logoColor=white" alt="Platform">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-6C757D?style=flat-square&logo=windows&logoColor=white" alt="Platform">
 </p>
 
-<p align="center">
-  <a href="https://trendshift.io/repositories/15423" target="_blank">
-    <img src="https://trendshift.io/api/badge/repositories/15423" alt="GitHub Trending" height="80">
-  </a>
-</p>
+### ✨ EthanToken 定制版核心增强
+
+* **🔐 浏览器一键安全授权 + 多账号秒切**：无需手动复制填写 Base URL 或 API Key，点击“浏览器一键登录”，自动通过本地回环回调同步账号额度、模型列表、默认对话设置，支持多账号一键切换。
+* **🎨 生图 / 生视频开箱即用**：内置修复后的图片生成引擎与 `aionui-image-generation` MCP 工具，附带自动挂载到全助手的 `ethantoken-media` 技能手册，生成的图片直接在对话气泡中渲染预览。
+* **🛡️ 隐私强化与独立更新通道**：已彻底屏蔽原版 Sentry 日志上报与遥测；关闭原版静默覆盖更新，检查更新直连本仓库 Releases。
+* **💬 中文社群支持**：微信交流群「羊毛出在AI身上」可在客户端左下角**交流群**直接扫码加入，QQ 交流群号：`1134610506`（[点击一键加群](https://qm.qq.com/q/Lq38Kn6bMQ)）。
 
 ---
 
-<p align="center">
-  <strong>A free, open-source, Cowork app with AI Agents</strong><br>
-  <em>Built-in Agent | Zero Setup | Any API Key | Multi-Agents | Remote Access | Cross-Platform | 24/7 Automation</em>
-</p>
+---
 
-<p align="center">
-  <a href="https://github.com/iOfficeAI/AionUi/releases">
-    <img src="https://img.shields.io/badge/⬇️%20Download%20Now-Latest%20Release-32CD32?style=for-the-badge&logo=github&logoColor=white" alt="Download Latest Release" height="50">
-  </a>
-</p>
+## 📖 原版架构与功能详览（Apache-2.0 上游项目）
 
-<p align="center">
-  <strong>English</strong> | <a href="./docs/readme/readme_ch.md">简体中文</a> | <a href="./docs/readme/readme_tw.md">繁體中文</a> | <a href="./docs/readme/readme_jp.md">日本語</a> | <a href="./docs/readme/readme_ko.md">한국어</a> | <a href="./docs/readme/readme_es.md">Español</a> | <a href="./docs/readme/readme_pt.md">Português</a> | <a href="./docs/readme/readme_tr.md">Türkçe</a> | <a href="./docs/readme/readme_ru.md">Русский</a> | <a href="./docs/readme/readme_uk.md">Українська</a> | <a href="https://www.aionui.com" target="_blank">Official Website</a>
-</p>
-
-<p align="center">
-  <strong>💬 Community:</strong> <a href="https://discord.gg/2QAwJn7Egx" target="_blank">Discord (English)</a> | <a href="./resources/wx-27.png" target="_blank">微信 (中文群)</a> | <a href="https://twitter.com/AionUI" target="_blank">Twitter</a>
-</p>
+本项目基于开源仓库 [iOfficeAI/AionUi](https://github.com/iOfficeAI/AionUi)（Apache-2.0 License）构建。下方保留上游项目的完整架构介绍与原版功能说明。
 
 ---
 
