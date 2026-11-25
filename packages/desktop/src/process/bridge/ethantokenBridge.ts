@@ -19,7 +19,7 @@ import { getBuiltinMcpScriptPath } from '../utils/initStorage';
 import { setStartOnBootEnabled } from './applicationBridge';
 import { writeCloseToTraySetting } from '../utils/closeToTraySetting';
 import { createOrUpdateTray, setCloseToTrayEnabled } from '../utils/tray';
-import type { Assistant, UpdateAssistantRequest } from '@/common/types/agent/assistantTypes';
+import type { Assistant, AssistantDetail, UpdateAssistantRequest } from '@/common/types/agent/assistantTypes';
 import type { CreateProviderRequest, UpdateProviderRequest } from '@/common/types/provider/providerApi';
 
 const ETHANTOKEN_BASE_URL = 'https://ethantoken.top';
@@ -771,15 +771,50 @@ async function attachEthanTokenSkillToAssistants(): Promise<void> {
   }
   skillAttachPromise = (async () => {
     try {
-      const assistants = await httpRequest<Assistant[]>('GET', '/api/assistants');
+      const [assistants, mcpServers] = await Promise.all([
+        httpRequest<Assistant[]>('GET', '/api/assistants'),
+        httpRequest<IMcpServer[]>('GET', '/api/mcp/servers').catch((): IMcpServer[] => []),
+      ]);
       if (!Array.isArray(assistants) || assistants.length === 0) return;
 
+      const enabledImageGenId = (mcpServers || []).find(
+        (s) => s.name === BUILTIN_IMAGE_GEN_NAME && s.enabled
+      )?.id;
       const handledIds = readHandledSkillAssistantIds();
       let changed = false;
 
       for (const assistant of assistants) {
-        if (!assistant?.id || assistant.source === 'builtin') continue;
+        if (!assistant?.id) continue;
         if (handledIds.has(assistant.id)) continue;
+
+        if (assistant.source === 'builtin') {
+          try {
+            const detail = await httpRequest<AssistantDetail>(
+              'GET',
+              `/api/assistants/${encodeURIComponent(assistant.id)}?locale=zh-CN`
+            );
+            const currentSkillIds = detail?.defaults?.skills?.value ?? detail?.capabilities?.default_skill_ids ?? [];
+            const currentMcpIds = detail?.defaults?.mcps?.value ?? [];
+            const nextSkillIds = Array.from(new Set([...currentSkillIds, 'ethantoken-media']));
+            const nextMcpIds = enabledImageGenId
+              ? Array.from(new Set([...currentMcpIds, enabledImageGenId]))
+              : currentMcpIds;
+            const builtinPayload: UpdateAssistantRequest = {
+              id: assistant.id,
+              agent_id: detail?.engine?.agent_id || assistant.agent_id || undefined,
+              defaults: {
+                skills: { mode: 'fixed', value: nextSkillIds },
+                ...(enabledImageGenId ? { mcps: { mode: 'fixed', value: nextMcpIds } } : {}),
+              },
+            };
+            await httpRequest<Assistant>('PUT', `/api/assistants/${encodeURIComponent(assistant.id)}`, builtinPayload);
+            handledIds.add(assistant.id);
+            changed = true;
+          } catch (err) {
+            console.warn(`[EthanToken] attach defaults to builtin assistant ${assistant.id} deferred:`, err);
+          }
+          continue;
+        }
 
         const existingSkills = assistant.enabled_skills ?? [];
         if (existingSkills.includes('ethantoken-media')) {
@@ -969,6 +1004,7 @@ export function initEthanTokenBridge(): void {
       if (providerId && apiKey && !apiKey.includes('*')) {
         await ensureImageGenerationConfigured(providerId, apiKey, models);
       }
+      void ensureEthanTokenSkillInstalled();
 
       const updated: StoredSession = {
         ...current,

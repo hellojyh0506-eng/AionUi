@@ -7,7 +7,7 @@
 import { ipcBridge } from '@/common';
 import { buildGuidSlashCommands } from '@/common/chat/slash/guidSlashCommands';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
-import type { IMcpServer, TProviderWithModel } from '@/common/config/storage';
+import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type TProviderWithModel } from '@/common/config/storage';
 import { resolveLocaleKey } from '@/common/utils';
 import type { AssistantDetail } from '@/common/types/agent/assistantTypes';
 
@@ -81,6 +81,18 @@ const GuidPage: React.FC = () => {
   const [guidEnabledSkills, setGuidEnabledSkills] = useState<string[] | undefined>(undefined);
   const [availableMcpServers, setAvailableMcpServers] = useState<IMcpServer[]>([]);
   const [guidSelectedMcpServerIds, setGuidSelectedMcpServerIds] = useState<string[] | undefined>(undefined);
+  const selectedAssistantIdRef = useRef<string | null>(null);
+  const manualSkillToggleAssistantRef = useRef<string | null>(null);
+  const manualMcpToggleAssistantRef = useRef<string | null>(null);
+
+  const hasEthanTokenMediaSkill = useMemo(
+    () => allSkills.some((s) => s.name === 'ethantoken-media'),
+    [allSkills]
+  );
+  const enabledBuiltinImageGenServerId = useMemo(
+    () => availableMcpServers.find((s) => s.name === BUILTIN_IMAGE_GEN_NAME && s.enabled)?.id,
+    [availableMcpServers]
+  );
 
   useEffect(() => {
     ipcBridge.fs.listAvailableSkills
@@ -109,6 +121,7 @@ const GuidPage: React.FC = () => {
   }, []);
 
   const handleToggleSkill = useCallback((skillName: string, isAuto: boolean) => {
+    manualSkillToggleAssistantRef.current = selectedAssistantIdRef.current;
     if (isAuto) {
       setGuidDisabledBuiltinSkills((prev) => {
         const list = prev ?? [];
@@ -123,6 +136,7 @@ const GuidPage: React.FC = () => {
   }, []);
 
   const handleToggleMcpServer = useCallback((serverId: string) => {
+    manualMcpToggleAssistantRef.current = selectedAssistantIdRef.current;
     setGuidSelectedMcpServerIds((prev) => {
       const current = prev ?? [];
       return current.includes(serverId) ? current.filter((id) => id !== serverId) : [...current, serverId];
@@ -345,8 +359,10 @@ const GuidPage: React.FC = () => {
     return [t('guid.defaultPrompts.understand'), t('guid.defaultPrompts.cleanup'), t('guid.defaultPrompts.create')];
   }, [localeKey, selectedAssistantDetail, selectedAssistantRecord, selectedAssistantId, t]);
 
-  // Sync disabledBuiltinSkills + enabledSkills from assistant detail defaults.
+  // Sync disabledBuiltinSkills + enabledSkills from assistant detail defaults,
+  // ensuring Butler (builtin) and any newly bound CLI also get ethantoken-media.
   useEffect(() => {
+    selectedAssistantIdRef.current = selectedAssistantId;
     if (!selectedAssistantId || !selectedAssistantDetail) {
       setGuidDisabledBuiltinSkills(undefined);
       setGuidEnabledSkills(undefined);
@@ -355,8 +371,17 @@ const GuidPage: React.FC = () => {
 
     const resolvedDefaults = resolveGuidAssistantDefaults(selectedAssistantDetail);
     setGuidDisabledBuiltinSkills(resolvedDefaults.disabledBuiltinSkillIds);
-    setGuidEnabledSkills(resolvedDefaults.skillIds);
-  }, [selectedAssistantDetail, selectedAssistantId]);
+    const shouldAutoIncludeMediaSkill =
+      hasEthanTokenMediaSkill &&
+      manualSkillToggleAssistantRef.current !== selectedAssistantId &&
+      (selectedAssistantDetail.source === 'builtin' ||
+        (selectedAssistantDetail.defaults.skills.mode !== 'fixed' && resolvedDefaults.skillIds.length === 0));
+    setGuidEnabledSkills(
+      shouldAutoIncludeMediaSkill
+        ? Array.from(new Set([...resolvedDefaults.skillIds, 'ethantoken-media']))
+        : resolvedDefaults.skillIds
+    );
+  }, [hasEthanTokenMediaSkill, selectedAssistantDetail, selectedAssistantId]);
 
   const appliedAssistantDefaultsKeyRef = useRef<string | null>(null);
   const manualModelSelectionAssistantRef = useRef<string | null>(null);
@@ -454,7 +479,15 @@ const GuidPage: React.FC = () => {
           agentSelection.setSelectedThoughtLevelValue(fallbackThoughtLevel, { persistPreference: false });
         }
       }
-      setGuidSelectedMcpServerIds(resolvedDefaults.mcpIds);
+      const shouldAutoIncludeImageMcp =
+        Boolean(enabledBuiltinImageGenServerId) &&
+        manualMcpToggleAssistantRef.current !== selectedAssistantId &&
+        (selectedAssistantDetail.source === 'builtin' || resolvedDefaults.mcpIds.length === 0);
+      setGuidSelectedMcpServerIds(
+        shouldAutoIncludeImageMcp && enabledBuiltinImageGenServerId
+          ? Array.from(new Set([...resolvedDefaults.mcpIds, enabledBuiltinImageGenServerId]))
+          : resolvedDefaults.mcpIds
+      );
     };
 
     void applyAssistantDefaults().catch((error) => {
@@ -468,12 +501,41 @@ const GuidPage: React.FC = () => {
     agentSelection.setSelectedAcpModel,
     agentSelection.setSelectedMode,
     agentSelection.setSelectedThoughtLevelValue,
+    enabledBuiltinImageGenServerId,
     modelSelection.modelList,
     modelSelection.resetCurrentModel,
     modelSelection.setCurrentModel,
     selectedAssistantId,
     selectedAssistantDetail,
   ]);
+
+  // Also backfill ethantoken-media & image-gen MCP if async catalogs finish loading after defaults ran
+  useEffect(() => {
+    if (!selectedAssistantId || !selectedAssistantDetail) return;
+    if (
+      hasEthanTokenMediaSkill &&
+      manualSkillToggleAssistantRef.current !== selectedAssistantId &&
+      (selectedAssistantDetail.source === 'builtin' ||
+        (selectedAssistantDetail.defaults.skills.mode !== 'fixed' &&
+          (selectedAssistantDetail.defaults.skills.value?.length ?? 0) === 0))
+    ) {
+      setGuidEnabledSkills((prev) => {
+        const list = prev ?? [];
+        return list.includes('ethantoken-media') ? list : [...list, 'ethantoken-media'];
+      });
+    }
+    if (
+      enabledBuiltinImageGenServerId &&
+      manualMcpToggleAssistantRef.current !== selectedAssistantId &&
+      (selectedAssistantDetail.source === 'builtin' ||
+        (selectedAssistantDetail.defaults.mcps.value?.length ?? 0) === 0)
+    ) {
+      setGuidSelectedMcpServerIds((prev) => {
+        const list = prev ?? [];
+        return list.includes(enabledBuiltinImageGenServerId) ? list : [...list, enabledBuiltinImageGenServerId];
+      });
+    }
+  }, [enabledBuiltinImageGenServerId, hasEthanTokenMediaSkill, selectedAssistantDetail, selectedAssistantId]);
 
   const setGuidSelectedMode = useCallback(
     (mode: React.SetStateAction<string>) => {
