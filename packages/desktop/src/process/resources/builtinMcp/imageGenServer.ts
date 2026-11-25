@@ -39,56 +39,66 @@ function getProviderFromEnv(): TProviderWithModel | null {
 }
 
 async function main() {
+  const defaultModel = process.env.AIONUI_IMG_MODEL?.trim() || '未配置';
+  const defaultBaseUrl = process.env.AIONUI_IMG_BASE_URL?.trim() || '未配置';
+
   const server = new McpServer({
     name: BUILTIN_IMAGE_GEN_NAME,
-    version: '1.0.0',
+    version: '1.1.0',
   });
 
   server.tool(
     'aionui_image_generation',
-    `REQUIRED tool for generating or editing images. You MUST use this tool for ANY image generation request.
+    `REQUIRED tool for generating or editing images (text-to-image AND reference-image / image-to-image edits via /v1/images/generations & /v1/images/edits).
 
-CRITICAL: You (the AI assistant) CANNOT generate images directly. You MUST call this tool for:
-- Creating/generating any new images from text descriptions
-- Drawing, painting, or making any visual content
-- Editing or modifying existing images
+Configured Runtime Defaults:
+- Default model: ${defaultModel}
+- API gateway: ${defaultBaseUrl}
+- Supports optional overrides: model, size, quality, n, and image_uris (triggers multipart /v1/images/edits on OpenAI-compatible image models like gpt-image-2.6).
 
-Primary Functions:
-- Generate new images from English text descriptions
-- Edit/modify existing images with English text prompts
-
-IMPORTANT: All prompts must be in English for optimal results.
-
-When to Use (MANDATORY):
-- User asks to "generate", "create", "draw", "make", "paint" an image
-- User asks for any visual content creation
-- User asks to edit or modify an image
-- User mentions @filename with image extensions (.jpg, .jpeg, .png, .gif, .webp, .bmp, .tiff, .svg)
-
-Input Support:
-- Multiple local file paths in array format: ["img1.jpg", "img2.png"]
-- Multiple HTTP/HTTPS image URLs in array format
-- Text prompts for generation or analysis
+CRITICAL: You MUST call this tool directly BEFORE falling back to scripts or searching config files:
+- Text-to-image: pass prompt (and optional model / size / quality / n)
+- Reference image / image-to-image editing: pass prompt AND image_uris (e.g. ["ref.jpg"]) + optional size (e.g. "1024x1536")
 
 Output:
-- Saves generated/processed images to workspace with timestamp naming
-- Returns image path and AI description/analysis
-
-IMPORTANT: When user provides multiple images, ALWAYS pass ALL images to the image_uris parameter as an array.`,
+- Saves generated/edited image directly into the conversation workspace and returns its relative path for inline Markdown rendering.`,
     {
       prompt: z
         .string()
         .describe(
-          'The text prompt in English that must clearly specify the operation type: "Generate image: [description]" for creating new images, "Analyze image: [what to analyze]" for image recognition/analysis, or "Edit image: [modifications]" for image editing.'
+          'Text prompt describing the image to generate or edit (English recommended for best visual fidelity).'
         ),
       image_uris: z
         .array(z.string())
         .optional()
         .describe(
-          'Optional: Array of paths to existing local image files or HTTP/HTTPS URLs to edit/modify. Examples: ["test.jpg", "https://example.com/img.png"]. For single image, use array format: ["test.jpg"]. Relative paths are resolved against the current working directory.'
+          'Optional: Local workspace file paths or HTTP/HTTPS URLs for reference-image / image-to-image editing (automatically routes to /v1/images/edits for models like gpt-image-2.6).'
         ),
+      model: z
+        .string()
+        .optional()
+        .describe(
+          `Optional model override (defaults to "${defaultModel}"). Examples: "gpt-image-2.6", "gpt-image-2.5", "grok-imagine-image-2.0", "gemini-2.5-flash-image".`
+        ),
+      size: z
+        .string()
+        .optional()
+        .describe(
+          'Optional output dimensions, e.g. "1024x1024", "1024x1536", "1536x1024", "auto".'
+        ),
+      quality: z
+        .string()
+        .optional()
+        .describe('Optional rendering quality, e.g. "low", "medium", "high", "auto".'),
+      n: z
+        .number()
+        .int()
+        .min(1)
+        .max(4)
+        .optional()
+        .describe('Optional number of images to generate (1-4, defaults to 1).'),
     },
-    async ({ prompt, image_uris }) => {
+    async ({ prompt, image_uris, model, size, quality, n }) => {
       const provider = getProviderFromEnv();
       if (!provider) {
         return {
@@ -108,7 +118,12 @@ IMPORTANT: When user provides multiple images, ALWAYS pass ALL images to the ima
       // workspace path from the model (path traversal boundary).
       const workspaceDir = process.cwd();
 
-      const result = await executeImageGeneration({ prompt, image_uris }, provider, workspaceDir, proxy);
+      const result = await executeImageGeneration(
+        { prompt, image_uris, model, size, quality, n },
+        provider,
+        workspaceDir,
+        proxy
+      );
 
       if (!result.success) {
         return {

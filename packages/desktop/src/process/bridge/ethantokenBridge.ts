@@ -154,10 +154,34 @@ function readAccountStore(): StoredAccountStore {
   return { accounts: [] };
 }
 
+function getSharedConfigPath(): string {
+  return path.join(app.getPath('appData'), 'ethantoken', 'config.json');
+}
+
+function syncSharedEthanTokenConfig(store: StoredAccountStore): void {
+  try {
+    const active = getActiveSession(store);
+    const sharedPath = getSharedConfigPath();
+    fs.mkdirSync(path.dirname(sharedPath), { recursive: true });
+    const payload = {
+      baseUrl: ETHANTOKEN_API_BASE_URL,
+      apiKey: active?.apiKey || '',
+      defaultImageModel: pickCheapestImageModel(active?.models || DEFAULT_MODELS) || 'gpt-image-2.6',
+      userId: active?.userId ?? null,
+      username: active?.username ?? '',
+      updatedAt: Date.now(),
+    };
+    fs.writeFileSync(sharedPath, JSON.stringify(payload, null, 2), 'utf-8');
+  } catch {
+    // ignore shared config mirror write errors
+  }
+}
+
 function writeAccountStore(store: StoredAccountStore): void {
   const storePath = getStorePath();
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   fs.writeFileSync(storePath, JSON.stringify(store, null, 2), 'utf-8');
+  syncSharedEthanTokenConfig(store);
 }
 
 function getActiveSession(store: StoredAccountStore): StoredSession | null {
@@ -709,28 +733,52 @@ async function ensureDefaultUserPresets(): Promise<void> {
 
 const ETHANTOKEN_MEDIA_SKILL_MD = `---
 name: ethantoken-media
-description: EthanToken 官方生图与生视频操作手册。当用户要求生成图片、编辑图片或生成视频时优先遵循本手册，严禁盲目翻找本地配置文件或反复试错端点。
+description: EthanToken 官方生图（含文生图、参考图/图生图编辑）与生视频操作手册。调用媒体工具或写生图/生视频脚本前优先遵循本手册，严禁全盘 Grep、翻找 SQLite 或 .asar。
 ---
 
 # EthanToken 媒体生成操作手册
 
-## 1. 生图规则（优先使用内置工具）
-- **首选方案**：直接调用内置 MCP 工具 \`aionui_image_generation\`，无需自己写脚本，也不要去翻找本地配置文件。
-- **如果用户明确指定某个模型或需要脚本调用**：
-  - \`gpt-image-2.5\` / \`gpt-image-2.6\` / \`grok-imagine-image-2.0\` 等模型必须走 OpenAI 标准生图接口：
-    \`POST https://ethantoken.top/v1/images/generations\`（不要走 \`/v1/chat/completions\`，否则会报虚假拥挤错误）。
-  - 请求体示例：\`{ "model": "gpt-image-2.6", "prompt": "...", "n": 1 }\`。
-  - 返回可能是 \`data[0].b64_json\`，也可能是 \`data[0].url\`（签名媒体直链，直接 GET 下载即可）。
-  - 仅 \`gemini-*-image\`（如 \`gemini-2.5-flash-image\`）优先走 \`POST https://ethantoken.top/v1/chat/completions\`。
-  - **注意**：不要使用 \`gpt-image-2.6-b64\`（当前分组下无渠道），优先用 \`gpt-image-2.6\` 或 \`gpt-image-2.5\`。
+## 1. 首选方案：直接调用内置 MCP 工具 \`aionui_image_generation\`
+- 工具 schema 已直接暴露并透传 \`prompt\`、\`image_uris\`、\`model\`、\`size\`、\`quality\`、\`n\`，工具描述中已回显当前默认模型（通常为 \`gpt-image-2.6\`）。
+- **文生图**：直接传 \`prompt\`（可选 \`model\`、\`size\`如 \`"1024x1536"\`、\`quality\`、\`n\`）。
+- **参考图 / 图生图**：同时传 \`prompt\` 与 \`image_uris: ["参考图文件名.jpg"]\`（自动路由至 \`/v1/images/edits\`）。
+- 工具会自动将成片保存到当前工作区并返回相对路径。**能用 MCP 一次完成时，不要再写脚本或读取配置文件。**
 
-## 2. 生视频规则
+## 2. 如需脚本调用：HTTP 接口与密钥入口
+
+### 2.1 API 密钥获取（唯一推荐入口，严禁全盘搜索或翻 SQLite）
+- 直接读取 \`%APPDATA%\\ethantoken\\config.json\`：
+  - \`baseUrl\`：\`https://ethantoken.top/v1\`
+  - \`apiKey\`：当前激活账号明文 \`sk-...\`
+  - \`defaultImageModel\`：当前推荐生图模型
+- 备用只读会话文件：\`%APPDATA%\\AionUi\\ethantoken-sessions.json\` 中 \`activeUserId\` 对应账号的 \`apiKey\`。
+
+### 2.2 文生图接口（Text-to-Image）
+- **端点**：\`POST https://ethantoken.top/v1/images/generations\`（Content-Type: \`application/json\`）
+- **参数**：\`{ "model": "gpt-image-2.6", "prompt": "...", "size": "1024x1024", "n": 1 }\`
+- **常用模型**：\`gpt-image-2.6\`、\`gpt-image-2.5\`、\`grok-imagine-image-2.0\`（勿用无渠道的 \`gpt-image-2.6-b64\`；仅 \`gemini-*-image\` 走 \`/v1/chat/completions\`）。
+- **返回处理**：兼容读取 \`data[0].b64_json\`（解码写入工作区）或 \`data[0].url\`（直接 GET 下载落盘）。
+
+### 2.3 参考图 / 图生图接口（Image-to-Image / Edits）
+- **端点**：\`POST https://ethantoken.top/v1/images/edits\`（**必须使用 \`multipart/form-data\`**，不要走 JSON \`generations\` 或 \`chat/completions\`）
+- **表单字段**：
+  - \`image\`：参考图二进制文件（可附带多个同名 \`image\` 字段以传多张参考图）
+  - \`model\`：如 \`gpt-image-2.6\`
+  - \`prompt\`：英文/中文编辑指令
+  - \`size\`（可选）：如 \`1024x1024\`、\`1024x1536\`、\`1536x1024\`
+  - \`n\`（可选）：数量，默认 \`1\`
+
+## 3. 生视频接口
 - 支持模型：\`grok-imagine-video\`、\`grok-imagine-video-1.5\`、\`muse-video\`。
-- **正确端点**：\`POST https://ethantoken.top/v1/videos\` 创建异步视频任务，拿到 \`id\` 后轮询 \`GET https://ethantoken.top/v1/videos/{id}\` 直到完成并下载媒体文件到当前工作区。
-- 不要把视频模型当成 \`/v1/chat/completions\` 聊天模型调用。
+- **正确端点**：\`POST https://ethantoken.top/v1/videos\` 创建异步任务，拿到 \`id\` 后轮询 \`GET https://ethantoken.top/v1/videos/{id}\` 直到完成并下载视频到工作区。
 
-## 3. 结果展示要求
-- 生成图片保存到当前工作区后，最终回复中**必须**附带 Markdown 图片语法，且括号内使用**相对文件名**（例如 \`![图片描述](chick.png)\`），不要写 \`C:\\\` 盘符绝对路径，以便在聊天气泡内直接渲染显示。
+## 4. Windows Skills CLI 与故障降级提示
+- 若内置 \`Skill('ethantoken-media')\` 工具返回 \`Available skills:\` 为空，**不要重复调用 \`Skill()\`**，直接调用 \`aionui_image_generation\` 或直接读取 \`%APPDATA%\\AionUi\\aionui\\skills\\ethantoken-media\\SKILL.md\`。
+- 在 Windows PowerShell 中如须调用 \`$env:AIONUI_HELPER_BIN\`，**禁止使用 \`printf\` 或直接 \`$json | & exe\`（会带 BOM 报错）**，请用 Python 或无 BOM UTF-8 写法：
+  \`python -c "import os,subprocess; print(subprocess.check_output([os.environ['AIONUI_HELPER_BIN'],'skills','show'], input=b'{\\"name\\":\\"ethantoken-media\\"}').decode('utf-8','replace').replace('\\r',''))"\`
+
+## 5. 结果展示要求
+- 成片保存到当前工作区后，最终回复中**必须**附带相对路径 Markdown 图片语法（例如 \`![成片描述](output.png)\`），不要写 \`C:\\\` 绝对路径。
 `;
 
 let skillFileWritten = false;
@@ -868,6 +916,7 @@ async function ensureEthanTokenSkillInstalled(): Promise<void> {
 }
 
 export function initEthanTokenBridge(): void {
+  syncSharedEthanTokenConfig(readAccountStore());
   void ensureDefaultUserPresets();
   void ensureEthanTokenSkillInstalled();
 

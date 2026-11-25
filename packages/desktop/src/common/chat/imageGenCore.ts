@@ -214,6 +214,10 @@ export async function processImageUri(imageUri: string, workspaceDir: string): P
 export interface ImageGenParams {
   prompt: string;
   image_uris?: string[] | string;
+  model?: string;
+  size?: string;
+  quality?: string;
+  n?: number;
 }
 
 export interface ImageGenResult {
@@ -224,22 +228,74 @@ export interface ImageGenResult {
   error?: string;
 }
 
+interface ImageRequestOptions {
+  size?: string;
+  quality?: string;
+  n?: number;
+}
+
+function getOpenAiRootUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '').replace(/\/v1beta$/, '');
+}
+
+async function resolveImageBinaryForEdit(
+  imageUri: string,
+  workspaceDir: string,
+  signal?: AbortSignal
+): Promise<{ buffer: Buffer; fileName: string; mimeType: string } | null> {
+  if (isHttpUrl(imageUri)) {
+    const resp = await fetch(imageUri, { signal });
+    if (!resp.ok) return null;
+    const arrayBuffer = await resp.arrayBuffer();
+    const contentType = (resp.headers.get('content-type') || 'image/png').split(';')[0].trim().toLowerCase();
+    const subtype = contentType.startsWith('image/') ? contentType.slice('image/'.length) : 'png';
+    const ext = MIME_TO_EXT_MAP[subtype] || '.png';
+    return { buffer: Buffer.from(arrayBuffer), fileName: `ref${ext}`, mimeType: contentType };
+  }
+
+  const processedUri = imageUri.startsWith('@') ? imageUri.substring(1) : imageUri;
+  const fullPath = await resolveSafePath(workspaceDir, processedUri);
+  await fs.promises.access(fullPath, fs.constants.F_OK);
+  if (!isImageFile(fullPath)) {
+    throw new Error(`File is not a supported image type: ${fullPath}`);
+  }
+  const buffer = await fs.promises.readFile(fullPath);
+  return { buffer, fileName: path.basename(fullPath), mimeType: getImageMimeType(fullPath) };
+}
+
+function extractImagesFromOpenAiResponse(json: {
+  data?: Array<{ b64_json?: string; url?: string }>;
+}): Array<{ type: 'image_url'; image_url: { url: string } }> | null {
+  const first = json?.data?.[0];
+  if (first?.b64_json) {
+    return [{ type: 'image_url', image_url: { url: `data:image/png;base64,${first.b64_json}` } }];
+  }
+  if (first?.url) {
+    return [{ type: 'image_url', image_url: { url: first.url } }];
+  }
+  return null;
+}
+
 /**
  * Core image generation function shared between MCP server and Gemini tool.
  */
 async function tryOpenAiImagesGenerations(
   provider: TProviderWithModel,
   prompt: string,
+  opts: ImageRequestOptions,
   signal?: AbortSignal
 ): Promise<Array<{ type: 'image_url'; image_url: { url: string } }> | null> {
   if (!provider.base_url || !provider.api_key) return null;
-  const rootUrl = provider.base_url.replace(/\/+$/, '').replace(/\/v1$/, '').replace(/\/v1beta$/, '');
-  const endpoint = `${rootUrl}/v1/images/generations`;
+  const endpoint = `${getOpenAiRootUrl(provider.base_url)}/v1/images/generations`;
   const apiKey = provider.api_key.split(',')[0].trim();
+  const extra: Record<string, unknown> = {
+    ...(opts.size ? { size: opts.size } : {}),
+    ...(opts.quality ? { quality: opts.quality } : {}),
+  };
 
   const payloads: Array<Record<string, unknown>> = [
-    { model: provider.use_model, prompt, n: 1, response_format: 'b64_json' },
-    { model: provider.use_model, prompt, n: 1 },
+    { model: provider.use_model, prompt, n: opts.n ?? 1, response_format: 'b64_json', ...extra },
+    { model: provider.use_model, prompt, n: opts.n ?? 1, ...extra },
   ];
 
   for (const body of payloads) {
@@ -255,18 +311,57 @@ async function tryOpenAiImagesGenerations(
       });
       if (!resp.ok) continue;
       const json = (await resp.json()) as { data?: Array<{ b64_json?: string; url?: string }> };
-      const first = json?.data?.[0];
-      if (first?.b64_json) {
-        return [{ type: 'image_url', image_url: { url: `data:image/png;base64,${first.b64_json}` } }];
-      }
-      if (first?.url) {
-        return [{ type: 'image_url', image_url: { url: first.url } }];
-      }
+      const extracted = extractImagesFromOpenAiResponse(json);
+      if (extracted) return extracted;
     } catch {
       // try next payload shape
     }
   }
   return null;
+}
+
+async function tryOpenAiImagesEdits(
+  provider: TProviderWithModel,
+  prompt: string,
+  imageUris: string[],
+  workspaceDir: string,
+  opts: ImageRequestOptions,
+  signal?: AbortSignal
+): Promise<Array<{ type: 'image_url'; image_url: { url: string } }> | null> {
+  if (!provider.base_url || !provider.api_key || imageUris.length === 0) return null;
+  const endpoint = `${getOpenAiRootUrl(provider.base_url)}/v1/images/edits`;
+  const apiKey = provider.api_key.split(',')[0].trim();
+
+  try {
+    const resolvedFiles = (
+      await Promise.all(imageUris.map((uri) => resolveImageBinaryForEdit(uri, workspaceDir, signal)))
+    ).filter((item): item is NonNullable<typeof item> => item !== null);
+    if (resolvedFiles.length === 0) return null;
+
+    const form = new FormData();
+    form.append('model', provider.use_model);
+    form.append('prompt', prompt);
+    form.append('n', String(opts.n ?? 1));
+    if (opts.size) form.append('size', opts.size);
+    if (opts.quality) form.append('quality', opts.quality);
+    for (const file of resolvedFiles) {
+      form.append('image', new Blob([new Uint8Array(file.buffer)], { type: file.mimeType }), file.fileName);
+    }
+
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: form,
+      signal,
+    });
+    if (!resp.ok) return null;
+    const json = (await resp.json()) as { data?: Array<{ b64_json?: string; url?: string }> };
+    return extractImagesFromOpenAiResponse(json);
+  } catch {
+    return null;
+  }
 }
 
 function prefersImagesGenerationsEndpoint(modelName: string): boolean {
@@ -280,6 +375,14 @@ export async function executeImageGeneration(
   proxy?: string,
   signal?: AbortSignal
 ): Promise<ImageGenResult> {
+  const effectiveProvider: TProviderWithModel = params.model?.trim()
+    ? { ...provider, use_model: params.model.trim() }
+    : provider;
+  const requestOpts: ImageRequestOptions = {
+    size: params.size?.trim() || undefined,
+    quality: params.quality?.trim() || undefined,
+    n: typeof params.n === 'number' && params.n >= 1 && params.n <= 4 ? Math.trunc(params.n) : 1,
+  };
   if (signal?.aborted) {
     return { success: false, text: 'Image generation was cancelled.', error: 'cancelled' };
   }
@@ -359,25 +462,37 @@ export async function executeImageGeneration(
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [{ role: 'user', content: contentParts }];
 
     // Create client and call API
-    let responseText = 'Image generated successfully.';
+    let responseText = `Image generated successfully with ${effectiveProvider.use_model}.`;
     let images: Array<{ type: 'image_url'; image_url: { url: string } }> | undefined;
 
-    if (!hasImages && prefersImagesGenerationsEndpoint(provider.use_model)) {
-      const directImages = await tryOpenAiImagesGenerations(provider, params.prompt, signal);
+    if (hasImages && prefersImagesGenerationsEndpoint(effectiveProvider.use_model)) {
+      const directEdits = await tryOpenAiImagesEdits(
+        effectiveProvider,
+        params.prompt,
+        imageUris,
+        resolvedWorkspaceDir,
+        requestOpts,
+        signal
+      );
+      if (directEdits) {
+        images = directEdits;
+      }
+    } else if (!hasImages && prefersImagesGenerationsEndpoint(effectiveProvider.use_model)) {
+      const directImages = await tryOpenAiImagesGenerations(effectiveProvider, params.prompt, requestOpts, signal);
       if (directImages) {
         images = directImages;
       }
     }
 
     if (!images || images.length === 0) {
-      const rotatingClient: RotatingClient = await ClientFactory.createRotatingClient(provider, {
+      const rotatingClient: RotatingClient = await ClientFactory.createRotatingClient(effectiveProvider, {
         proxy,
         rotatingOptions: { maxRetries: 3, retryDelay: 1000 },
       });
 
       try {
         const completion: UnifiedChatCompletionResponse = await rotatingClient.createChatCompletion(
-          { model: provider.use_model, messages: messages as any },
+          { model: effectiveProvider.use_model, messages: messages as any },
           { signal, timeout: API_TIMEOUT_MS }
         );
         const choice = completion.choices[0];
@@ -386,10 +501,27 @@ export async function executeImageGeneration(
           images = choice.message.images;
         }
       } catch (chatErr) {
-        if (hasImages) throw chatErr;
-        const fallbackImages = await tryOpenAiImagesGenerations(provider, params.prompt, signal);
-        if (!fallbackImages) throw chatErr;
-        images = fallbackImages;
+        if (hasImages) {
+          const fallbackEdits = await tryOpenAiImagesEdits(
+            effectiveProvider,
+            params.prompt,
+            imageUris,
+            resolvedWorkspaceDir,
+            requestOpts,
+            signal
+          );
+          if (!fallbackEdits) throw chatErr;
+          images = fallbackEdits;
+        } else {
+          const fallbackImages = await tryOpenAiImagesGenerations(
+            effectiveProvider,
+            params.prompt,
+            requestOpts,
+            signal
+          );
+          if (!fallbackImages) throw chatErr;
+          images = fallbackImages;
+        }
       }
     }
 
@@ -438,15 +570,24 @@ export async function executeImageGeneration(
       }
     }
 
-    if ((!images || images.length === 0) && !hasImages) {
-      const fallbackImages = await tryOpenAiImagesGenerations(provider, params.prompt, signal);
+    if (!images || images.length === 0) {
+      const fallbackImages = hasImages
+        ? await tryOpenAiImagesEdits(
+            effectiveProvider,
+            params.prompt,
+            imageUris,
+            resolvedWorkspaceDir,
+            requestOpts,
+            signal
+          )
+        : await tryOpenAiImagesGenerations(effectiveProvider, params.prompt, requestOpts, signal);
       if (fallbackImages) {
         images = fallbackImages;
       }
     }
 
     if (!images || images.length === 0) {
-      const warningMessage = `Image generation did not produce any images.\n\nModel response: ${responseText}\n\nTip: Make sure your image generation model supports this type of request. Current model: ${provider.use_model}`;
+      const warningMessage = `Image generation did not produce any images.\n\nModel response: ${responseText}\n\nTip: Make sure your image generation model supports this type of request. Current model: ${effectiveProvider.use_model}`;
       return { success: true, text: warningMessage };
     }
 
