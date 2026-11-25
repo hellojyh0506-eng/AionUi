@@ -1527,6 +1527,7 @@ export interface EthanTokenAccountState {
 
 export const ethantoken = {
   login: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:login'),
+  cancelLogin: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:cancel-login'),
   getStatus: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:get-status'),
   refresh: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:refresh'),
   logout: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:logout'),

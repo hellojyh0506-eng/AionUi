@@ -15,7 +15,8 @@ import type { EthanTokenAccountState, EthanTokenAccountSummary } from '@/common/
 import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type IProvider } from '@/common/config/storage';
 import { IMAGE_GEN_ENV_KEYS } from '@/common/config/imageGenerationMcpEnv';
 import { CAPABILITY_PATTERNS } from '@/common/utils/modelCapabilities';
-import { getBuiltinMcpScriptPath, getSkillsDir } from '../utils/initStorage';
+import { getBuiltinMcpScriptPath } from '../utils/initStorage';
+import type { Assistant, UpdateAssistantRequest } from '@/common/types/agent/assistantTypes';
 import type { CreateProviderRequest, UpdateProviderRequest } from '@/common/types/provider/providerApi';
 
 const ETHANTOKEN_BASE_URL = 'https://ethantoken.top';
@@ -507,12 +508,12 @@ async function applyAuthorizedPayload(payload: DesktopAuthCallbackPayload): Prom
   return upsertAccountInStore(session, true);
 }
 
-let activeAuthCleanup: (() => void) | null = null;
+let activeAuthCancel: ((reason?: string) => void) | null = null;
 
 async function loginViaSystemBrowser(): Promise<EthanTokenAccountState> {
-  if (activeAuthCleanup) {
-    activeAuthCleanup();
-    activeAuthCleanup = null;
+  if (activeAuthCancel) {
+    activeAuthCancel('已重新发起浏览器授权');
+    activeAuthCancel = null;
   }
 
   const expectedState = crypto.randomBytes(16).toString('hex');
@@ -572,8 +573,8 @@ async function loginViaSystemBrowser(): Promise<EthanTokenAccountState> {
         clearTimeout(timeoutTimer);
         timeoutTimer = null;
       }
-      if (activeAuthCleanup === cleanup) {
-        activeAuthCleanup = null;
+      if (activeAuthCancel === cancel) {
+        activeAuthCancel = null;
       }
       try {
         server.close();
@@ -589,7 +590,11 @@ async function loginViaSystemBrowser(): Promise<EthanTokenAccountState> {
       resolve(state);
     };
 
-    activeAuthCleanup = cleanup;
+    const cancel = (reason?: string) => {
+      finish(toAccountState(readAccountStore(), reason));
+    };
+
+    activeAuthCancel = cancel;
 
     server.listen(0, '127.0.0.1', () => {
       const addr = server.address();
@@ -670,20 +675,100 @@ description: EthanToken 官方生图与生视频操作手册。当用户要求�
 - 生成图片保存到当前工作区后，最终回复中**必须**附带 Markdown 图片语法，且括号内使用**相对文件名**（例如 \`![图片描述](chick.png)\`），不要写 \`C:\\\` 盘符绝对路径，以便在聊天气泡内直接渲染显示。
 `;
 
-let skillInstalled = false;
+let skillFileWritten = false;
+let skillAttachPromise: Promise<void> | null = null;
+
+function getSkillAttachmentStatePath(): string {
+  return path.join(app.getPath('userData'), 'ethantoken-skill-attachments.json');
+}
+
+function readHandledSkillAssistantIds(): Set<string> {
+  try {
+    const file = getSkillAttachmentStatePath();
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      if (Array.isArray(parsed)) {
+        return new Set(parsed.filter((id): id is string => typeof id === 'string'));
+      }
+    }
+  } catch {
+    // ignore read error
+  }
+  return new Set();
+}
+
+function writeHandledSkillAssistantIds(ids: Set<string>): void {
+  try {
+    const file = getSkillAttachmentStatePath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(Array.from(ids), null, 2), 'utf-8');
+  } catch {
+    // ignore write error
+  }
+}
+
+async function attachEthanTokenSkillToAssistants(): Promise<void> {
+  if (skillAttachPromise) {
+    return skillAttachPromise;
+  }
+  skillAttachPromise = (async () => {
+    try {
+      const assistants = await httpRequest<Assistant[]>('GET', '/api/assistants');
+      if (!Array.isArray(assistants) || assistants.length === 0) return;
+
+      const handledIds = readHandledSkillAssistantIds();
+      let changed = false;
+
+      for (const assistant of assistants) {
+        if (!assistant?.id || assistant.source === 'builtin') continue;
+        if (handledIds.has(assistant.id)) continue;
+
+        const existingSkills = assistant.enabled_skills ?? [];
+        if (existingSkills.includes('ethantoken-media')) {
+          handledIds.add(assistant.id);
+          changed = true;
+          continue;
+        }
+
+        const updatePayload: UpdateAssistantRequest = {
+          id: assistant.id,
+          enabled_skills: Array.from(new Set([...existingSkills, 'ethantoken-media'])),
+        };
+        try {
+          await httpRequest<Assistant>('PUT', `/api/assistants/${encodeURIComponent(assistant.id)}`, updatePayload);
+          handledIds.add(assistant.id);
+          changed = true;
+        } catch (err) {
+          console.warn(`[EthanToken] attach skill to assistant ${assistant.id} deferred:`, err);
+        }
+      }
+
+      if (changed) {
+        writeHandledSkillAssistantIds(handledIds);
+      }
+    } catch (err) {
+      console.warn('[EthanToken] attach ethantoken-media skill to assistants deferred:', err);
+    } finally {
+      skillAttachPromise = null;
+    }
+  })();
+  return skillAttachPromise;
+}
 
 async function ensureEthanTokenSkillInstalled(): Promise<void> {
-  if (skillInstalled) return;
   try {
-    const paths = await httpRequest<{ user_skills_dir?: string }>('GET', '/api/skills/paths');
-    if (!paths?.user_skills_dir) return;
-    const skillDir = path.join(paths.user_skills_dir, 'ethantoken-media');
-    const skillFile = path.join(skillDir, 'SKILL.md');
-    fs.mkdirSync(skillDir, { recursive: true });
-    if (!fs.existsSync(skillFile) || fs.readFileSync(skillFile, 'utf-8') !== ETHANTOKEN_MEDIA_SKILL_MD) {
-      fs.writeFileSync(skillFile, ETHANTOKEN_MEDIA_SKILL_MD, 'utf-8');
+    if (!skillFileWritten) {
+      const paths = await httpRequest<{ user_skills_dir?: string }>('GET', '/api/skills/paths');
+      if (!paths?.user_skills_dir) return;
+      const skillDir = path.join(paths.user_skills_dir, 'ethantoken-media');
+      const skillFile = path.join(skillDir, 'SKILL.md');
+      fs.mkdirSync(skillDir, { recursive: true });
+      if (!fs.existsSync(skillFile) || fs.readFileSync(skillFile, 'utf-8') !== ETHANTOKEN_MEDIA_SKILL_MD) {
+        fs.writeFileSync(skillFile, ETHANTOKEN_MEDIA_SKILL_MD, 'utf-8');
+      }
+      skillFileWritten = true;
     }
-    skillInstalled = true;
+    await attachEthanTokenSkillToAssistants();
   } catch (err) {
     console.warn('[EthanToken] install ethantoken-media skill deferred:', err);
   }
@@ -701,11 +786,20 @@ export function initEthanTokenBridge(): void {
 
   ipcBridge.ethantoken.login.provider(async () => {
     try {
-      return await loginViaSystemBrowser();
+      const state = await loginViaSystemBrowser();
+      void ensureEthanTokenSkillInstalled();
+      return state;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return toAccountState(readAccountStore(), msg);
     }
+  });
+
+  ipcBridge.ethantoken.cancelLogin.provider(async () => {
+    if (activeAuthCancel) {
+      activeAuthCancel('已取消登录授权');
+    }
+    return toAccountState(readAccountStore());
   });
 
   ipcBridge.ethantoken.switchAccount.provider(async ({ userId }) => {

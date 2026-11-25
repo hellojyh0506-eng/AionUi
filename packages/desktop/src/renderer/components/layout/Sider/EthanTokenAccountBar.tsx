@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Dropdown, Menu, Message, Modal, Tooltip } from '@arco-design/web-react';
 import { Down, Logout, Refresh, User, Wallet } from '@icon-park/react';
 import { mutate } from 'swr';
@@ -24,10 +24,17 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
     baseUrl: 'https://ethantoken.top',
   });
   const [loading, setLoading] = useState(false);
+  const [authPending, setAuthPending] = useState(false);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const loginSeqRef = useRef(0);
 
   const syncFrontendCaches = useCallback(async () => {
-    await Promise.all([mutate('/api/providers'), mutate('/api/mcp/servers')]);
+    await Promise.all([
+      mutate('/api/providers'),
+      mutate('/api/mcp/servers'),
+      mutate('assistants.list'),
+      mutate('skills.list'),
+    ]);
   }, []);
 
   const loadStatus = useCallback(async () => {
@@ -65,9 +72,23 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
   }, [account.loggedIn]);
 
   const handleLogin = async () => {
+    const seq = ++loginSeqRef.current;
+    setAuthPending(true);
     setLoading(true);
     try {
       const res = await ipcBridge.ethantoken.login.invoke();
+      if (loginSeqRef.current !== seq) {
+        return;
+      }
+      if (res.error === '已重新发起浏览器授权') {
+        return;
+      }
+      if (res.error === '已取消登录授权') {
+        const { error: _ignored, ...cleanState } = res;
+        setAccount(cleanState);
+        Message.info('已取消登录授权');
+        return;
+      }
       setAccount(res);
       if (res.loggedIn && !res.error) {
         await syncFrontendCaches();
@@ -76,9 +97,27 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
         Message.error(res.error);
       }
     } catch (err) {
-      Message.error(err instanceof Error ? err.message : '授权失败');
+      if (loginSeqRef.current === seq) {
+        Message.error(err instanceof Error ? err.message : '授权失败');
+      }
     } finally {
-      setLoading(false);
+      if (loginSeqRef.current === seq) {
+        setAuthPending(false);
+        setLoading(false);
+      }
+    }
+  };
+
+  const handleCancelLogin = async () => {
+    loginSeqRef.current += 1;
+    setAuthPending(false);
+    setLoading(false);
+    try {
+      const clean = await ipcBridge.ethantoken.cancelLogin.invoke();
+      setAccount(clean);
+      Message.info('已取消登录授权');
+    } catch {
+      // ignore cancel error
     }
   };
 
@@ -196,9 +235,14 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
               onClick={handleLogin}
               icon={<User theme='outline' size='14' fill='currentColor' />}
             >
-              {loading ? '请在浏览器完成授权...' : '浏览器一键登录 / 注册'}
+              {authPending ? '请在浏览器完成授权...' : '浏览器一键登录 / 注册'}
             </Button>
-            {savedAccounts.length > 0 && (
+            {authPending && (
+              <Button size='mini' long onClick={handleCancelLogin}>
+                取消浏览器授权
+              </Button>
+            )}
+            {savedAccounts.length > 0 && !authPending && (
               <Dropdown droplist={switchMenu} trigger='click' position='top'>
                 <Button size='mini' long>
                   快速切换已记住账号 ({savedAccounts.length})
@@ -257,7 +301,17 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
                 交流群
               </Button>
             </div>
-            {account.error && (
+            {authPending ? (
+              <div className='flex items-center justify-between gap-6px text-11px text-t-secondary leading-tight'>
+                <span className='truncate'>正在浏览器等待授权...</span>
+                <span
+                  onClick={() => void handleCancelLogin()}
+                  className='shrink-0 underline cursor-pointer text-[rgb(var(--primary-6))]'
+                >
+                  取消
+                </span>
+              </div>
+            ) : account.error ? (
               <div className='flex items-center justify-between gap-6px text-11px text-[rgb(var(--warning-6))] leading-tight'>
                 <span className='truncate'>{account.error}</span>
                 <span
@@ -267,7 +321,7 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
                   重新授权
                 </span>
               </div>
-            )}
+            ) : null}
           </div>
         )}
       </div>
