@@ -1,0 +1,836 @@
+/**
+ * @license
+ * Copyright 2025 AionUi (aionui.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import http from 'node:http';
+import path from 'node:path';
+import { app, BrowserWindow, shell } from 'electron';
+import { ipcBridge } from '@/common';
+import { httpRequest } from '@/common/adapter/httpBridge';
+import type { EthanTokenAccountState, EthanTokenAccountSummary } from '@/common/adapter/ipcBridge';
+import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type IProvider } from '@/common/config/storage';
+import { IMAGE_GEN_ENV_KEYS } from '@/common/config/imageGenerationMcpEnv';
+import { CAPABILITY_PATTERNS } from '@/common/utils/modelCapabilities';
+import { getBuiltinMcpScriptPath, getSkillsDir } from '../utils/initStorage';
+import type { CreateProviderRequest, UpdateProviderRequest } from '@/common/types/provider/providerApi';
+
+const ETHANTOKEN_BASE_URL = 'https://ethantoken.top';
+// Aionrs appends `/chat/completions` directly to provider base_url when is_full_url=false,
+// so the provider base_url must end with `/v1`. All models use `openai` protocol so both
+// OpenAI-compatible models and Claude models work cleanly on `/v1/chat/completions`.
+const ETHANTOKEN_API_BASE_URL = `${ETHANTOKEN_BASE_URL}/v1`;
+const QUOTA_PER_USD = 500000;
+const PROVIDER_NAME = 'EthanToken';
+
+const DEFAULT_MODELS = [
+  'deepseek-v4.1-flash',
+  'gpt-6.2-sol-fast',
+  'claude-sonnet-5-5',
+  'gemini-3.8-flash',
+  'gpt-6.2-sol',
+  'gpt-6.2-sol-pro',
+  'gpt-6.2-astra',
+  'deepseek-v4-pro',
+  'grok-4.7',
+  'gpt-image-2.5',
+  'gpt-image-2.5-b64',
+  'gpt-image-2.6',
+];
+
+const PREFERRED_CHAT_ORDER = [
+  'deepseek-v4.1-flash',
+  'gpt-6.2-sol-fast',
+  'claude-sonnet-5-5',
+  'gemini-3.8-flash',
+  'gpt-6.2-sol',
+  'deepseek-v4-pro',
+  'grok-4.7',
+];
+
+const PREFERRED_IMAGE_MODELS = [
+  'gpt-image-2.6',
+  'gpt-image-2.5',
+  'gpt-image-2.5-b64',
+  'gpt-image-2.6-flare',
+  'gpt-image-2.6-sunburst',
+  'grok-imagine-image-2.0',
+  'gemini-2.5-flash-image',
+];
+
+interface StoredSession {
+  baseUrl: string;
+  accessToken?: string;
+  cookie?: string;
+  userId: number;
+  username: string;
+  group: string;
+  quotaUsd: number;
+  usedUsd: number;
+  apiKey?: string;
+  models?: string[];
+  providerId?: string;
+  lastSyncedAt: number;
+}
+
+interface StoredAccountStore {
+  activeUserId?: number;
+  accounts: StoredSession[];
+}
+
+interface NewApiUser {
+  id: number;
+  username: string;
+  group: string;
+  quota: number;
+  used_quota: number;
+}
+
+interface NewApiToken {
+  id: number;
+  key: string;
+  name: string;
+  group: string;
+  status: number;
+}
+
+interface DesktopAuthCallbackPayload {
+  state?: string;
+  accessToken?: string;
+  userId?: number;
+  username?: string;
+  group?: string;
+  quotaUsd?: number;
+  usedUsd?: number;
+  apiKey?: string;
+  models?: string[];
+}
+
+function getStorePath(): string {
+  return path.join(app.getPath('userData'), 'ethantoken-sessions.json');
+}
+
+function getLegacySessionPath(): string {
+  return path.join(app.getPath('userData'), 'ethantoken-session.json');
+}
+
+function readAccountStore(): StoredAccountStore {
+  const storePath = getStorePath();
+  try {
+    if (fs.existsSync(storePath)) {
+      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf-8')) as StoredAccountStore;
+      if (Array.isArray(parsed?.accounts)) {
+        return parsed;
+      }
+    }
+  } catch {
+    // fallback to legacy migration
+  }
+
+  try {
+    const legacyPath = getLegacySessionPath();
+    if (fs.existsSync(legacyPath)) {
+      const legacy = JSON.parse(fs.readFileSync(legacyPath, 'utf-8')) as StoredSession;
+      if (legacy?.userId) {
+        const migrated: StoredAccountStore = {
+          activeUserId: legacy.userId,
+          accounts: [legacy],
+        };
+        writeAccountStore(migrated);
+        return migrated;
+      }
+    }
+  } catch {
+    // ignore legacy read failure
+  }
+
+  return { accounts: [] };
+}
+
+function writeAccountStore(store: StoredAccountStore): void {
+  const storePath = getStorePath();
+  fs.mkdirSync(path.dirname(storePath), { recursive: true });
+  fs.writeFileSync(storePath, JSON.stringify(store, null, 2), 'utf-8');
+}
+
+function getActiveSession(store: StoredAccountStore): StoredSession | null {
+  if (!store.activeUserId) return null;
+  return store.accounts.find((a) => a.userId === store.activeUserId) || null;
+}
+
+function upsertAccountInStore(session: StoredSession, setActive = true): StoredAccountStore {
+  const store = readAccountStore();
+  const idx = store.accounts.findIndex((a) => a.userId === session.userId);
+  if (idx >= 0) {
+    store.accounts[idx] = { ...store.accounts[idx], ...session };
+  } else {
+    store.accounts.unshift(session);
+  }
+  if (setActive) {
+    store.activeUserId = session.userId;
+  }
+  writeAccountStore(store);
+  return store;
+}
+
+function toAccountSummaries(store: StoredAccountStore): EthanTokenAccountSummary[] {
+  return store.accounts.map((a) => ({
+    userId: a.userId,
+    username: a.username,
+    group: a.group || '全能主力',
+    quotaUsd: a.quotaUsd ?? 0,
+  }));
+}
+
+function toAccountState(store: StoredAccountStore, error?: string): EthanTokenAccountState {
+  const active = getActiveSession(store);
+  const accounts = toAccountSummaries(store);
+  if (!active) {
+    return {
+      loggedIn: false,
+      baseUrl: ETHANTOKEN_BASE_URL,
+      accounts,
+      ...(error ? { error } : {}),
+    };
+  }
+  return {
+    loggedIn: true,
+    baseUrl: active.baseUrl || ETHANTOKEN_BASE_URL,
+    userId: active.userId,
+    username: active.username,
+    group: active.group,
+    quotaUsd: active.quotaUsd,
+    usedUsd: active.usedUsd,
+    providerId: active.providerId,
+    lastSyncedAt: active.lastSyncedAt,
+    accounts,
+    ...(error ? { error } : {}),
+  };
+}
+
+function prioritizeChatModels(models: string[]): string[] {
+  const source = models.length > 0 ? models : DEFAULT_MODELS;
+  const rank = new Map(PREFERRED_CHAT_ORDER.map((m, i) => [m, i]));
+  return [...source].sort((a, b) => {
+    const ra = rank.get(a) ?? Number.MAX_SAFE_INTEGER;
+    const rb = rank.get(b) ?? Number.MAX_SAFE_INTEGER;
+    return ra - rb;
+  });
+}
+
+function pickCheapestImageModel(models: string[]): string | undefined {
+  for (const preferred of PREFERRED_IMAGE_MODELS) {
+    if (models.includes(preferred)) return preferred;
+  }
+  return models.find((m) => CAPABILITY_PATTERNS.image_generation.test(m) && !/video/i.test(m));
+}
+
+async function newApiFetch<T = unknown>(
+  endpoint: string,
+  options: { method?: string; accessToken?: string; cookie?: string; userId?: number; body?: unknown } = {}
+): Promise<{ json: { success: boolean; message?: string; data?: T }; status: number }> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    Origin: ETHANTOKEN_BASE_URL,
+    Referer: `${ETHANTOKEN_BASE_URL}/`,
+  };
+  if (options.accessToken) headers.Authorization = `Bearer ${options.accessToken}`;
+  if (options.cookie) headers.Cookie = options.cookie;
+  if (options.userId) headers['New-Api-User'] = String(options.userId);
+  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+
+  const resp = await fetch(`${ETHANTOKEN_BASE_URL}${endpoint}`, {
+    method: options.method || 'GET',
+    headers,
+    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+  });
+
+  const text = await resp.text();
+  let parsed: { success: boolean; message?: string; data?: T };
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`服务器返回非 JSON 响应 (HTTP ${resp.status})`);
+  }
+  return { json: parsed, status: resp.status };
+}
+
+async function resolvePlainTokenKey(
+  auth: { accessToken?: string; cookie?: string; userId: number },
+  token: NewApiToken
+): Promise<string> {
+  let rawKey = token.key?.trim() || '';
+  if (!rawKey || rawKey.includes('*')) {
+    const keyRes = await newApiFetch<{ key?: string }>(`/api/token/${token.id}/key`, {
+      method: 'POST',
+      ...auth,
+    });
+    if (!keyRes.json.success || !keyRes.json.data?.key) {
+      throw new Error(keyRes.json.message || '获取完整 API 密钥失败');
+    }
+    rawKey = keyRes.json.data.key.trim();
+  }
+  if (!rawKey || rawKey.includes('*')) {
+    throw new Error('未能获取完整 API 密钥（服务端返回了脱敏掩码）');
+  }
+  return rawKey.startsWith('sk-') ? rawKey : `sk-${rawKey}`;
+}
+
+async function ensureApiKey(auth: { accessToken?: string; cookie?: string; userId: number }): Promise<string> {
+  const listRes = await newApiFetch<{ items?: NewApiToken[] } | NewApiToken[]>('/api/token/?p=0&size=20', auth);
+  const rawData = listRes.json.data;
+  const items = Array.isArray(rawData) ? rawData : rawData?.items || [];
+
+  const usable =
+    items.find((t) => t.status === 1 && (t.group === '全能主力' || t.group === '')) ||
+    items.find((t) => t.status === 1);
+
+  if (usable) {
+    return await resolvePlainTokenKey(auth, usable);
+  }
+
+  const createRes = await newApiFetch('/api/token/', {
+    method: 'POST',
+    ...auth,
+    body: {
+      name: 'AionUi-Desktop',
+      remain_quota: 0,
+      unlimited_quota: true,
+      expired_time: -1,
+      group: '全能主力',
+      model_limits_enabled: false,
+      model_limits: '',
+    },
+  });
+  if (!createRes.json.success) {
+    throw new Error(createRes.json.message || '自动创建 API 密钥失败');
+  }
+
+  const reList = await newApiFetch<{ items?: NewApiToken[] } | NewApiToken[]>('/api/token/?p=0&size=20', auth);
+  const reData = reList.json.data;
+  const reItems = Array.isArray(reData) ? reData : reData?.items || [];
+  const created = reItems.find((t) => t.status === 1 && t.name === 'AionUi-Desktop') || reItems.find((t) => t.status === 1);
+  if (!created) {
+    throw new Error('创建令牌后未能读取到可用密钥');
+  }
+  return await resolvePlainTokenKey(auth, created);
+}
+
+async function fetchUserModels(auth: { accessToken?: string; cookie?: string; userId: number }): Promise<string[]> {
+  try {
+    const res = await newApiFetch<string[]>('/api/user/models', auth);
+    if (res.json.success && Array.isArray(res.json.data) && res.json.data.length > 0) {
+      return prioritizeChatModels(res.json.data);
+    }
+  } catch {
+    // Fallback to default models
+  }
+  return prioritizeChatModels(DEFAULT_MODELS);
+}
+
+async function upsertEthanTokenProvider(apiKey: string, models: string[]): Promise<string> {
+  const existingList = (await httpRequest<IProvider[]>('GET', '/api/providers')) || [];
+  const existing = existingList.find(
+    (p) => p.platform === 'new-api' && (p.name === PROVIDER_NAME || p.base_url.includes('ethantoken.top'))
+  );
+
+  const modelProtocols: Record<string, string> = {};
+  for (const m of models) {
+    modelProtocols[m] = 'openai';
+  }
+
+  if (existing) {
+    const updateBody: UpdateProviderRequest = {
+      name: PROVIDER_NAME,
+      platform: 'new-api',
+      base_url: ETHANTOKEN_API_BASE_URL,
+      api_key: apiKey,
+      models,
+      model_protocols: modelProtocols,
+      enabled: true,
+    };
+    const updated = await httpRequest<IProvider>('PUT', `/api/providers/${existing.id}`, updateBody);
+    return updated?.id || existing.id;
+  }
+
+  const createBody: CreateProviderRequest = {
+    name: PROVIDER_NAME,
+    platform: 'new-api',
+    base_url: ETHANTOKEN_API_BASE_URL,
+    api_key: apiKey,
+    models,
+    model_protocols: modelProtocols,
+    enabled: true,
+  };
+  const created = await httpRequest<IProvider>('POST', '/api/providers', createBody);
+  return created.id;
+}
+
+async function ensureImageGenerationConfigured(providerId: string, apiKey: string, models: string[]): Promise<void> {
+  const chosenModel = pickCheapestImageModel(models);
+  if (!chosenModel) return;
+
+  try {
+    const clientSettings = await httpRequest<
+      Record<string, { id?: string; api_key?: string; use_model?: string; base_url?: string } | null>
+    >('GET', '/api/settings/client?keys=tools.imageGenerationModel');
+    const currentSetting = clientSettings?.['tools.imageGenerationModel'];
+    const needsSettingUpdate =
+      !currentSetting ||
+      !currentSetting.id ||
+      !currentSetting.use_model ||
+      !currentSetting.api_key ||
+      currentSetting.api_key.includes('*') ||
+      (currentSetting.id === providerId &&
+        (currentSetting.api_key !== apiKey || currentSetting.base_url !== ETHANTOKEN_API_BASE_URL));
+
+    const targetModel =
+      currentSetting?.use_model && models.includes(currentSetting.use_model) ? currentSetting.use_model : chosenModel;
+
+    if (needsSettingUpdate) {
+      await httpRequest<void>('PUT', '/api/settings/client', {
+        'tools.imageGenerationModel': {
+          id: providerId,
+          platform: 'new-api',
+          name: PROVIDER_NAME,
+          base_url: ETHANTOKEN_API_BASE_URL,
+          api_key: apiKey,
+          use_model: targetModel,
+          switch: true,
+        },
+      });
+    }
+
+    const servers = (await httpRequest<IMcpServer[]>('GET', '/api/mcp/servers')) || [];
+    const builtinImg = servers.find((s) => s.name === BUILTIN_IMAGE_GEN_NAME);
+    const scriptPath = getBuiltinMcpScriptPath('builtin-mcp-image-gen');
+    const desiredEnv: Record<string, string> = {
+      ...(builtinImg?.transport.type === 'stdio' ? builtinImg.transport.env || {} : {}),
+      [IMAGE_GEN_ENV_KEYS.providerId]: providerId,
+      [IMAGE_GEN_ENV_KEYS.platform]: 'new-api',
+      [IMAGE_GEN_ENV_KEYS.baseUrl]: ETHANTOKEN_API_BASE_URL,
+      [IMAGE_GEN_ENV_KEYS.apiKey]: apiKey,
+      [IMAGE_GEN_ENV_KEYS.model]: targetModel,
+    };
+
+    if (!builtinImg) {
+      const serverConfig = { command: 'node', args: [scriptPath], env: desiredEnv };
+      const createdServer = await httpRequest<IMcpServer>('POST', '/api/mcp/servers', {
+        name: BUILTIN_IMAGE_GEN_NAME,
+        description: 'Built-in image generation tool powered by AI models. Configure the model in Settings > Tools.',
+        builtin: true,
+        transport: { type: 'stdio', ...serverConfig },
+        original_json: JSON.stringify({ mcpServers: { [BUILTIN_IMAGE_GEN_NAME]: serverConfig } }, null, 2),
+      });
+      if (createdServer?.id && !createdServer.enabled) {
+        await httpRequest('POST', `/api/mcp/servers/${createdServer.id}/toggle`);
+      }
+      return;
+    }
+
+    if (builtinImg.transport.type === 'stdio') {
+      const existingEnv = builtinImg.transport.env || {};
+      const envChanged =
+        existingEnv[IMAGE_GEN_ENV_KEYS.providerId] !== desiredEnv[IMAGE_GEN_ENV_KEYS.providerId] ||
+        existingEnv[IMAGE_GEN_ENV_KEYS.apiKey] !== desiredEnv[IMAGE_GEN_ENV_KEYS.apiKey] ||
+        existingEnv[IMAGE_GEN_ENV_KEYS.model] !== desiredEnv[IMAGE_GEN_ENV_KEYS.model] ||
+        existingEnv[IMAGE_GEN_ENV_KEYS.baseUrl] !== desiredEnv[IMAGE_GEN_ENV_KEYS.baseUrl] ||
+        builtinImg.transport.args?.[0] !== scriptPath;
+
+      if (envChanged) {
+        const updatedTransport = { ...builtinImg.transport, command: 'node', args: [scriptPath], env: desiredEnv };
+        const original_json = JSON.stringify(
+          {
+            mcpServers: {
+              [builtinImg.name]: {
+                command: updatedTransport.command,
+                args: updatedTransport.args,
+                env: desiredEnv,
+              },
+            },
+          },
+          null,
+          2
+        );
+        await httpRequest('PUT', `/api/mcp/servers/${builtinImg.id}`, {
+          transport: updatedTransport,
+          original_json,
+        });
+      }
+
+      if (!builtinImg.enabled) {
+        await httpRequest('POST', `/api/mcp/servers/${builtinImg.id}/toggle`);
+      }
+    }
+  } catch (err) {
+    console.warn('[EthanToken] image generation auto-config skipped:', err);
+  }
+}
+
+function focusMainWindow(): void {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.setAlwaysOnTop(true);
+  win.focus();
+  win.setAlwaysOnTop(false);
+  app.focus({ steal: true });
+}
+
+async function applyAuthorizedPayload(payload: DesktopAuthCallbackPayload): Promise<StoredAccountStore> {
+  const rawKey = (payload.apiKey || '').trim();
+  if (!rawKey || rawKey.includes('*')) {
+    throw new Error('授权回调未包含有效明文 API 密钥');
+  }
+  const normalizedKey = rawKey.startsWith('sk-') ? rawKey : `sk-${rawKey}`;
+  const models = prioritizeChatModels(Array.isArray(payload.models) ? payload.models : DEFAULT_MODELS);
+  const providerId = await upsertEthanTokenProvider(normalizedKey, models);
+  await ensureImageGenerationConfigured(providerId, normalizedKey, models);
+
+  const session: StoredSession = {
+    baseUrl: ETHANTOKEN_BASE_URL,
+    accessToken: payload.accessToken,
+    userId: Number(payload.userId),
+    username: payload.username || `user_${payload.userId}`,
+    group: payload.group || '全能主力',
+    quotaUsd: typeof payload.quotaUsd === 'number' ? payload.quotaUsd : 0,
+    usedUsd: typeof payload.usedUsd === 'number' ? payload.usedUsd : 0,
+    apiKey: normalizedKey,
+    models,
+    providerId,
+    lastSyncedAt: Date.now(),
+  };
+  return upsertAccountInStore(session, true);
+}
+
+let activeAuthCleanup: (() => void) | null = null;
+
+async function loginViaSystemBrowser(): Promise<EthanTokenAccountState> {
+  if (activeAuthCleanup) {
+    activeAuthCleanup();
+    activeAuthCleanup = null;
+  }
+
+  const expectedState = crypto.randomBytes(16).toString('hex');
+
+  return await new Promise<EthanTokenAccountState>((resolve) => {
+    let settled = false;
+    let timeoutTimer: NodeJS.Timeout | null = null;
+
+    const server = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', ETHANTOKEN_BASE_URL);
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      if (req.method === 'POST' && req.url?.startsWith('/callback')) {
+        let body = '';
+        req.on('data', (chunk) => {
+          body += chunk;
+          if (body.length > 1024 * 1024) req.destroy();
+        });
+        req.on('end', () => {
+          void (async () => {
+            try {
+              const payload = JSON.parse(body) as DesktopAuthCallbackPayload;
+              if (!payload || payload.state !== expectedState || !payload.userId) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, message: 'Invalid state or user' }));
+                return;
+              }
+              const store = await applyAuthorizedPayload(payload);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true }));
+              finish(toAccountState(store));
+              focusMainWindow();
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: msg }));
+              finish(toAccountState(readAccountStore(), msg));
+            }
+          })();
+        });
+        return;
+      }
+
+      res.writeHead(404);
+      res.end('Not Found');
+    });
+
+    const cleanup = () => {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+      if (activeAuthCleanup === cleanup) {
+        activeAuthCleanup = null;
+      }
+      try {
+        server.close();
+      } catch {
+        // ignore close error
+      }
+    };
+
+    const finish = (state: EthanTokenAccountState) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(state);
+    };
+
+    activeAuthCleanup = cleanup;
+
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      if (!addr || typeof addr === 'string') {
+        finish(toAccountState(readAccountStore(), '无法启动本地授权回调服务'));
+        return;
+      }
+      const callbackUrl = `http://127.0.0.1:${addr.port}/callback`;
+      const authUrl = `${ETHANTOKEN_BASE_URL}/desktop-auth?callback=${encodeURIComponent(callbackUrl)}&state=${encodeURIComponent(expectedState)}`;
+      void shell.openExternal(authUrl);
+    });
+
+    server.on('error', (err) => {
+      finish(toAccountState(readAccountStore(), `授权服务启动失败: ${err.message}`));
+    });
+
+    timeoutTimer = setTimeout(() => {
+      finish(toAccountState(readAccountStore(), '浏览器授权超时，请重试'));
+    }, 180000);
+  });
+}
+
+const DEFAULT_USER_PRESETS: Record<string, unknown> = {
+  language: 'zh-CN',
+  'upload.saveToWorkspace': true,
+  'workspace.pasteConfirm': true,
+  'system.notificationEnabled': true,
+  'system.closeToTray': false,
+  'webui.desktop.enabled': false,
+  'pet.enabled': false,
+};
+
+async function ensureDefaultUserPresets(): Promise<void> {
+  try {
+    const keys = Object.keys(DEFAULT_USER_PRESETS);
+    const current =
+      (await httpRequest<Record<string, unknown>>(
+        'GET',
+        `/api/settings/client?keys=${encodeURIComponent(keys.join(','))}`
+      )) || {};
+    const updates: Record<string, unknown> = {};
+    for (const [key, defaultValue] of Object.entries(DEFAULT_USER_PRESETS)) {
+      if (current[key] === undefined || current[key] === null) {
+        updates[key] = defaultValue;
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      await httpRequest<void>('PUT', '/api/settings/client', updates);
+    }
+  } catch (err) {
+    console.warn('[EthanToken] default user presets skipped:', err);
+  }
+}
+
+const ETHANTOKEN_MEDIA_SKILL_MD = `---
+name: ethantoken-media
+description: EthanToken 官方生图与生视频操作手册。当用户要求生成图片、编辑图片或生成视频时优先遵循本手册，严禁盲目翻找本地配置文件或反复试错端点。
+---
+
+# EthanToken 媒体生成操作手册
+
+## 1. 生图规则（优先使用内置工具）
+- **首选方案**：直接调用内置 MCP 工具 \`aionui_image_generation\`，无需自己写脚本，也不要去翻找本地配置文件。
+- **如果用户明确指定某个模型或需要脚本调用**：
+  - \`gpt-image-2.5\` / \`gpt-image-2.6\` / \`grok-imagine-image-2.0\` 等模型必须走 OpenAI 标准生图接口：
+    \`POST https://ethantoken.top/v1/images/generations\`（不要走 \`/v1/chat/completions\`，否则会报虚假拥挤错误）。
+  - 请求体示例：\`{ "model": "gpt-image-2.6", "prompt": "...", "n": 1 }\`。
+  - 返回可能是 \`data[0].b64_json\`，也可能是 \`data[0].url\`（签名媒体直链，直接 GET 下载即可）。
+  - 仅 \`gemini-*-image\`（如 \`gemini-2.5-flash-image\`）优先走 \`POST https://ethantoken.top/v1/chat/completions\`。
+  - **注意**：不要使用 \`gpt-image-2.6-b64\`（当前分组下无渠道），优先用 \`gpt-image-2.6\` 或 \`gpt-image-2.5\`。
+
+## 2. 生视频规则
+- 支持模型：\`grok-imagine-video\`、\`grok-imagine-video-1.5\`、\`muse-video\`。
+- **正确端点**：\`POST https://ethantoken.top/v1/videos\` 创建异步视频任务，拿到 \`id\` 后轮询 \`GET https://ethantoken.top/v1/videos/{id}\` 直到完成并下载媒体文件到当前工作区。
+- 不要把视频模型当成 \`/v1/chat/completions\` 聊天模型调用。
+
+## 3. 结果展示要求
+- 生成图片保存到当前工作区后，最终回复中**必须**附带 Markdown 图片语法，且括号内使用**相对文件名**（例如 \`![图片描述](chick.png)\`），不要写 \`C:\\\` 盘符绝对路径，以便在聊天气泡内直接渲染显示。
+`;
+
+let skillInstalled = false;
+
+async function ensureEthanTokenSkillInstalled(): Promise<void> {
+  if (skillInstalled) return;
+  try {
+    const paths = await httpRequest<{ user_skills_dir?: string }>('GET', '/api/skills/paths');
+    if (!paths?.user_skills_dir) return;
+    const skillDir = path.join(paths.user_skills_dir, 'ethantoken-media');
+    const skillFile = path.join(skillDir, 'SKILL.md');
+    fs.mkdirSync(skillDir, { recursive: true });
+    if (!fs.existsSync(skillFile) || fs.readFileSync(skillFile, 'utf-8') !== ETHANTOKEN_MEDIA_SKILL_MD) {
+      fs.writeFileSync(skillFile, ETHANTOKEN_MEDIA_SKILL_MD, 'utf-8');
+    }
+    skillInstalled = true;
+  } catch (err) {
+    console.warn('[EthanToken] install ethantoken-media skill deferred:', err);
+  }
+}
+
+export function initEthanTokenBridge(): void {
+  void ensureDefaultUserPresets();
+  void ensureEthanTokenSkillInstalled();
+
+  ipcBridge.ethantoken.getStatus.provider(async () => {
+    void ensureEthanTokenSkillInstalled();
+    void ensureDefaultUserPresets();
+    return toAccountState(readAccountStore());
+  });
+
+  ipcBridge.ethantoken.login.provider(async () => {
+    try {
+      return await loginViaSystemBrowser();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return toAccountState(readAccountStore(), msg);
+    }
+  });
+
+  ipcBridge.ethantoken.switchAccount.provider(async ({ userId }) => {
+    const store = readAccountStore();
+    const target = store.accounts.find((a) => a.userId === userId);
+    if (!target) {
+      return toAccountState(store, '未找到该本地账号记录，请重新授权');
+    }
+    try {
+      let apiKey = target.apiKey;
+      let models = prioritizeChatModels(target.models || DEFAULT_MODELS);
+      if ((!apiKey || apiKey.includes('*')) && target.accessToken) {
+        const auth = { accessToken: target.accessToken, cookie: target.cookie, userId: target.userId };
+        apiKey = await ensureApiKey(auth);
+        models = await fetchUserModels(auth);
+      }
+      if (!apiKey || apiKey.includes('*')) {
+        return toAccountState(store, '该账号缺少有效密钥，请通过浏览器重新授权');
+      }
+      const providerId = await upsertEthanTokenProvider(apiKey, models);
+      await ensureImageGenerationConfigured(providerId, apiKey, models);
+
+      const updated: StoredSession = {
+        ...target,
+        apiKey,
+        models,
+        providerId,
+        lastSyncedAt: Date.now(),
+      };
+      const nextStore = upsertAccountInStore(updated, true);
+      return toAccountState(nextStore);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return toAccountState(readAccountStore(), msg);
+    }
+  });
+
+  ipcBridge.ethantoken.refresh.provider(async () => {
+    const store = readAccountStore();
+    const current = getActiveSession(store);
+    if (!current) {
+      return toAccountState(store);
+    }
+    try {
+      const providers = (await httpRequest<IProvider[]>('GET', '/api/providers')) || [];
+      const existing = providers.find(
+        (p) => p.platform === 'new-api' && (p.name === PROVIDER_NAME || p.base_url.includes('ethantoken.top'))
+      );
+
+      let selfRes: { json: { success: boolean; message?: string; data?: NewApiUser }; status: number } | null = null;
+      if (current.accessToken) {
+        selfRes = await newApiFetch<NewApiUser>('/api/user/self', {
+          accessToken: current.accessToken,
+          cookie: current.cookie,
+          userId: current.userId,
+        });
+      }
+
+      const validUser = selfRes && selfRes.status !== 401 && selfRes.json.success ? selfRes.json.data : null;
+
+      let apiKey = current.apiKey;
+      if ((!apiKey || apiKey.includes('*')) && existing?.api_key && !existing.api_key.includes('*')) {
+        apiKey = existing.api_key;
+      }
+
+      const needsProviderRepair =
+        !existing ||
+        !existing.api_key ||
+        existing.api_key.includes('*') ||
+        existing.base_url !== ETHANTOKEN_API_BASE_URL ||
+        existing.model_protocols?.['claude-sonnet-5-5'] === 'anthropic';
+
+      let providerId = existing?.id || current.providerId;
+      let models = prioritizeChatModels(current.models || existing?.models || DEFAULT_MODELS);
+
+      if (needsProviderRepair) {
+        if (validUser && current.accessToken) {
+          const auth = { accessToken: current.accessToken, cookie: current.cookie, userId: validUser.id };
+          apiKey = await ensureApiKey(auth);
+          models = await fetchUserModels(auth);
+        }
+        if (apiKey && !apiKey.includes('*')) {
+          providerId = await upsertEthanTokenProvider(apiKey, models);
+        }
+      }
+
+      if (providerId && apiKey && !apiKey.includes('*')) {
+        await ensureImageGenerationConfigured(providerId, apiKey, models);
+      }
+
+      const updated: StoredSession = {
+        ...current,
+        username: validUser?.username || current.username,
+        group: validUser?.group || current.group,
+        quotaUsd: validUser ? Math.round((validUser.quota / QUOTA_PER_USD) * 10000) / 10000 : current.quotaUsd,
+        usedUsd: validUser ? Math.round((validUser.used_quota / QUOTA_PER_USD) * 10000) / 10000 : current.usedUsd,
+        apiKey,
+        models,
+        providerId,
+        lastSyncedAt: Date.now(),
+      };
+      const nextStore = upsertAccountInStore(updated, true);
+
+      if (!validUser) {
+        return toAccountState(nextStore, '网页登录态已到期（不影响已同步的 API 聊天），点此重新授权即可刷新余额');
+      }
+      return toAccountState(nextStore);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return toAccountState(readAccountStore(), msg);
+    }
+  });
+
+  ipcBridge.ethantoken.openWallet.provider(async () => {
+    await shell.openExternal(`${ETHANTOKEN_BASE_URL}/wallet`);
+    return toAccountState(readAccountStore());
+  });
+
+  ipcBridge.ethantoken.logout.provider(async () => {
+    const store = readAccountStore();
+    if (store.activeUserId) {
+      store.accounts = store.accounts.filter((a) => a.userId !== store.activeUserId);
+      store.activeUserId = undefined;
+      writeAccountStore(store);
+    }
+    return toAccountState(store);
+  });
+}

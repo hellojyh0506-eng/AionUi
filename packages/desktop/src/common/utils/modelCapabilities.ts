@@ -19,12 +19,12 @@ export const CAPABILITY_PATTERNS: Record<ModelType, RegExp> = {
   text: /gpt|claude|gemini|qwen|llama|mistral|deepseek/i,
   vision: /4o|claude-3|gemini-.*-pro|gemini-.*-flash|gemini-2\.0|qwen-vl|llava|vision/i,
   function_calling: /gpt-4|claude-3|gemini|qwen|deepseek/i,
-  image_generation: /flux|diffusion|stabilityai|sd-|dall|cogview|janus|midjourney|mj-|imagen/i,
+  image_generation: /flux|diffusion|stabilityai|sd-|dall|cogview|janus|midjourney|mj-|imagen|gpt-image|nano-banana|grok-imagine-image|-image(?:$|-)/i,
   web_search: /search|perplexity/i,
   reasoning: /o1-|reasoning|think/i,
   embedding: /(?:^text-|embed|bge-|e5-|LLM2Vec|retrieval|uae-|gte-|jina-clip|jina-embeddings|voyage-)/i,
   rerank: /(?:rerank|re-rank|re-ranker|re-ranking|retrieval|retriever)/i,
-  excludeFromPrimary: /dall-e|flux|stable-diffusion|midjourney|flash-image|image|embed|rerank/i,
+  excludeFromPrimary: /dall-e|flux|stable-diffusion|midjourney|flash-image|image|video|embed|rerank/i,
 };
 
 /**
@@ -43,7 +43,7 @@ export const CAPABILITY_EXCLUSIONS: Record<ModelType, RegExp[]> = {
     /embed/i,
     /rerank/i,
   ],
-  image_generation: [],
+  image_generation: [/video/i],
   web_search: [],
   reasoning: [],
   embedding: [],

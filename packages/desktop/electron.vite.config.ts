@@ -131,7 +131,7 @@ export default defineConfig(({ mode }) => {
             ]
           : []),
         ...(enableSentrySourceMaps ? [sentryVitePlugin(sentryPluginOptions)] : []),
-        ...(isDevelopment ? [buildMcpServersPlugin()] : []),
+        buildMcpServersPlugin(),
       ],
       resolve: { alias: mainAliases, extensions: ['.ts', '.tsx', '.js', '.json'] },
       build: {

@@ -1501,6 +1501,40 @@ export const theme = {
 };
 
 // ---------------------------------------------------------------------------
+// EthanToken account login, balance sync & provider auto-configuration
+// ---------------------------------------------------------------------------
+
+export interface EthanTokenAccountSummary {
+  userId: number;
+  username: string;
+  group: string;
+  quotaUsd: number;
+}
+
+export interface EthanTokenAccountState {
+  loggedIn: boolean;
+  baseUrl: string;
+  userId?: number;
+  username?: string;
+  group?: string;
+  quotaUsd?: number;
+  usedUsd?: number;
+  providerId?: string;
+  lastSyncedAt?: number;
+  error?: string;
+  accounts?: EthanTokenAccountSummary[];
+}
+
+export const ethantoken = {
+  login: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:login'),
+  getStatus: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:get-status'),
+  refresh: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:refresh'),
+  logout: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:logout'),
+  openWallet: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:open-wallet'),
+  switchAccount: bridge.buildProvider<EthanTokenAccountState, { userId: number }>('ethantoken:switch-account'),
+};
+
+// ---------------------------------------------------------------------------
 // System Settings — routed to /api/settings/* unless they need Electron-native side effects.
 // ---------------------------------------------------------------------------
 

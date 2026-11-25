@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { BrowserWindow } from 'electron';
+import { app, type BrowserWindow } from 'electron';
 import { ipcBridge } from '@/common';
 
 export const PROTOCOL_SCHEME = 'aionui';
@@ -68,6 +68,18 @@ export const clearPendingDeepLinkUrl = (): void => {
 export const handleDeepLinkUrl = (url: string): void => {
   const parsed = parseDeepLinkUrl(url);
   if (!parsed) return;
+
+  if (parsed.action === 'focus') {
+    if (mainWindowRef && !mainWindowRef.isDestroyed()) {
+      if (mainWindowRef.isMinimized()) mainWindowRef.restore();
+      mainWindowRef.show();
+      mainWindowRef.setAlwaysOnTop(true);
+      mainWindowRef.focus();
+      mainWindowRef.setAlwaysOnTop(false);
+      app.focus({ steal: true });
+    }
+    return;
+  }
 
   if (!mainWindowRef || mainWindowRef.isDestroyed()) {
     pendingDeepLinkUrl = url;

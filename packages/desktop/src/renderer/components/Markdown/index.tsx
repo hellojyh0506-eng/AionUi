@@ -135,7 +135,7 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
               remarkPlugins={MARKDOWN_REMARK_PLUGINS}
               rehypePlugins={rehypePlugins}
               components={components}
-              urlTransform={(url) => (resolveLocalFileLinkPath(url) ? url : defaultUrlTransform(url))}
+              urlTransform={(url) => (resolveLocalFileLinkPath(url) || isLocalFilePath(url) ? url : defaultUrlTransform(url))}
             >
               {normalizedChildren}
             </ReactMarkdown>

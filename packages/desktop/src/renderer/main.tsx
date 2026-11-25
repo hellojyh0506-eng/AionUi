@@ -4,33 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Sentry must be initialized first
-// Use electron-specific renderer package only inside Electron; fall back to the
-// browser SDK when running as a web server (no window.electronAPI).
-if ((window as { electronAPI?: unknown }).electronAPI) {
-  // Dynamic import avoids bundling sentry-ipc:// protocol code into the web build
-  import('@sentry/electron/renderer')
-    .then((Sentry) =>
-      Sentry.init({
-        beforeSend(event) {
-          if (!(window as { __backendStartupFailed?: boolean }).__backendStartupFailed) {
-            return event;
-          }
-          const haystacks: string[] = [];
-          if (event.message) haystacks.push(event.message);
-          const exceptions = event.exception?.values ?? [];
-          for (const ex of exceptions) {
-            if (ex.value) haystacks.push(ex.value);
-          }
-          if (haystacks.some((h) => /Failed to fetch|window\.__backendPort|__backendPort unset/.test(h))) {
-            return null;
-          }
-          return event;
-        },
-      })
-    )
-    .catch(() => {});
-}
+// Sentry telemetry disabled in EthanToken build.
 
 // Runtime patches must be imported early
 import './utils/ui/runtimePatches';
@@ -183,18 +157,7 @@ function captureRuntimeInstallationIntegrityFailure(event: IRuntimeStatusEvent):
   if (!isInstallationIntegrityFailure(event.failure_kind)) {
     return;
   }
-
-  void import('@sentry/electron/renderer')
-    .then((Sentry) => {
-      Sentry.withScope((scope) => {
-        scope.setTag('aionui.installation_integrity', event.failure_kind ?? 'unknown');
-        scope.setTag('aionui.runtime_resource', event.resource);
-        scope.setTag('aionui.runtime_resource_id', event.resource_id ?? '');
-        scope.setTag('aionui.runtime_scope', event.scope.kind);
-        Sentry.captureMessage('runtime-installation-integrity-failure', 'error');
-      });
-    })
-    .catch(() => {});
+  console.error('[runtime] installation integrity failure:', event.failure_kind, event.resource);
 }
 
 function buildRuntimeInstallationDiagnostics(

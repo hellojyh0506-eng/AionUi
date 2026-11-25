@@ -115,14 +115,30 @@ export function getFileExtensionFromDataUrl(dataUrl: string): string {
   return DEFAULT_IMAGE_EXTENSION;
 }
 
-export async function saveGeneratedImage(base64Data: string, workspaceDir: string): Promise<string> {
+export async function saveGeneratedImage(imageDataOrUrl: string, workspaceDir: string, signal?: AbortSignal): Promise<string> {
   const timestamp = Date.now();
-  const fileExtension = getFileExtensionFromDataUrl(base64Data);
-  const file_name = `img-${timestamp}${fileExtension}`;
   const resolvedDir = path.resolve(workspaceDir);
+
+  if (isHttpUrl(imageDataOrUrl)) {
+    const resp = await fetch(imageDataOrUrl, { signal });
+    if (!resp.ok) {
+      throw new Error(`Failed to download generated image (HTTP ${resp.status})`);
+    }
+    const contentType = (resp.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    const mimeSubtype = contentType.startsWith('image/') ? contentType.slice('image/'.length) : '';
+    const fileExtension = MIME_TO_EXT_MAP[mimeSubtype] || DEFAULT_IMAGE_EXTENSION;
+    const file_name = `img-${timestamp}${fileExtension}`;
+    const file_path = path.join(resolvedDir, file_name);
+    const arrayBuffer = await resp.arrayBuffer();
+    await fs.promises.writeFile(file_path, Buffer.from(arrayBuffer));
+    return file_path;
+  }
+
+  const fileExtension = getFileExtensionFromDataUrl(imageDataOrUrl);
+  const file_name = `img-${timestamp}${fileExtension}`;
   const file_path = path.join(resolvedDir, file_name);
 
-  const base64WithoutPrefix = base64Data.replace(/^data:image\/[^;]+;base64,/, '');
+  const base64WithoutPrefix = imageDataOrUrl.replace(/^data:image\/[^;]+;base64,/, '');
   const imageBuffer = Buffer.from(base64WithoutPrefix, 'base64');
 
   try {
@@ -211,6 +227,52 @@ export interface ImageGenResult {
 /**
  * Core image generation function shared between MCP server and Gemini tool.
  */
+async function tryOpenAiImagesGenerations(
+  provider: TProviderWithModel,
+  prompt: string,
+  signal?: AbortSignal
+): Promise<Array<{ type: 'image_url'; image_url: { url: string } }> | null> {
+  if (!provider.base_url || !provider.api_key) return null;
+  const rootUrl = provider.base_url.replace(/\/+$/, '').replace(/\/v1$/, '').replace(/\/v1beta$/, '');
+  const endpoint = `${rootUrl}/v1/images/generations`;
+  const apiKey = provider.api_key.split(',')[0].trim();
+
+  const payloads: Array<Record<string, unknown>> = [
+    { model: provider.use_model, prompt, n: 1, response_format: 'b64_json' },
+    { model: provider.use_model, prompt, n: 1 },
+  ];
+
+  for (const body of payloads) {
+    try {
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal,
+      });
+      if (!resp.ok) continue;
+      const json = (await resp.json()) as { data?: Array<{ b64_json?: string; url?: string }> };
+      const first = json?.data?.[0];
+      if (first?.b64_json) {
+        return [{ type: 'image_url', image_url: { url: `data:image/png;base64,${first.b64_json}` } }];
+      }
+      if (first?.url) {
+        return [{ type: 'image_url', image_url: { url: first.url } }];
+      }
+    } catch {
+      // try next payload shape
+    }
+  }
+  return null;
+}
+
+function prefersImagesGenerationsEndpoint(modelName: string): boolean {
+  return /^(?:gpt-image|dall-e|grok-imagine-image|flux|sd-|cogview)/i.test(modelName);
+}
+
 export async function executeImageGeneration(
   params: ImageGenParams,
   provider: TProviderWithModel,
@@ -297,23 +359,39 @@ export async function executeImageGeneration(
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [{ role: 'user', content: contentParts }];
 
     // Create client and call API
-    const rotatingClient: RotatingClient = await ClientFactory.createRotatingClient(provider, {
-      proxy,
-      rotatingOptions: { maxRetries: 3, retryDelay: 1000 },
-    });
+    let responseText = 'Image generated successfully.';
+    let images: Array<{ type: 'image_url'; image_url: { url: string } }> | undefined;
 
-    const completion: UnifiedChatCompletionResponse = await rotatingClient.createChatCompletion(
-      { model: provider.use_model, messages: messages as any },
-      { signal, timeout: API_TIMEOUT_MS }
-    );
-
-    const choice = completion.choices[0];
-    if (!choice) {
-      return { success: false, text: 'No response from image generation API', error: 'No response' };
+    if (!hasImages && prefersImagesGenerationsEndpoint(provider.use_model)) {
+      const directImages = await tryOpenAiImagesGenerations(provider, params.prompt, signal);
+      if (directImages) {
+        images = directImages;
+      }
     }
 
-    const responseText = choice.message.content || 'Image generated successfully.';
-    let images = choice.message.images;
+    if (!images || images.length === 0) {
+      const rotatingClient: RotatingClient = await ClientFactory.createRotatingClient(provider, {
+        proxy,
+        rotatingOptions: { maxRetries: 3, retryDelay: 1000 },
+      });
+
+      try {
+        const completion: UnifiedChatCompletionResponse = await rotatingClient.createChatCompletion(
+          { model: provider.use_model, messages: messages as any },
+          { signal, timeout: API_TIMEOUT_MS }
+        );
+        const choice = completion.choices[0];
+        if (choice) {
+          responseText = choice.message.content || responseText;
+          images = choice.message.images;
+        }
+      } catch (chatErr) {
+        if (hasImages) throw chatErr;
+        const fallbackImages = await tryOpenAiImagesGenerations(provider, params.prompt, signal);
+        if (!fallbackImages) throw chatErr;
+        images = fallbackImages;
+      }
+    }
 
     // Extract images from markdown in content if not in images field
     if ((!images || images.length === 0) && responseText) {
@@ -325,29 +403,45 @@ export async function executeImageGeneration(
           image_url: { url: match[1] },
         }));
       } else {
-        const file_pathRegex = /!\[[^\]]*\]\(([^)]+\.(?:jpg|jpeg|png|gif|webp|bmp|tiff|svg))\)/gi;
-        const file_pathMatches = [...responseText.matchAll(file_pathRegex)];
-        if (file_pathMatches.length > 0) {
-          const processedImages: Array<{ type: 'image_url'; image_url: { url: string } }> = [];
-          for (const match of file_pathMatches) {
-            const file_path = match[1];
-            try {
-              const fullPath = await resolveSafePath(resolvedWorkspaceDir, file_path);
-              await fs.promises.access(fullPath);
-              const base64Data = await fileToBase64(fullPath);
-              const mimeType = getImageMimeType(fullPath);
-              processedImages.push({
-                type: 'image_url',
-                image_url: { url: `data:${mimeType};base64,${base64Data}` },
-              });
-            } catch (_fileError) {
-              console.warn(`[ImageGen] Could not load image file: ${file_path}`);
+        const httpUrlRegex = /!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/gi;
+        const httpUrlMatches = [...responseText.matchAll(httpUrlRegex)];
+        if (httpUrlMatches.length > 0) {
+          images = httpUrlMatches.map((match) => ({
+            type: 'image_url' as const,
+            image_url: { url: match[1] },
+          }));
+        } else {
+          const file_pathRegex = /!\[[^\]]*\]\(([^)]+\.(?:jpg|jpeg|png|gif|webp|bmp|tiff|svg))\)/gi;
+          const file_pathMatches = [...responseText.matchAll(file_pathRegex)];
+          if (file_pathMatches.length > 0) {
+            const processedImages: Array<{ type: 'image_url'; image_url: { url: string } }> = [];
+            for (const match of file_pathMatches) {
+              const file_path = match[1];
+              try {
+                const fullPath = await resolveSafePath(resolvedWorkspaceDir, file_path);
+                await fs.promises.access(fullPath);
+                const base64Data = await fileToBase64(fullPath);
+                const mimeType = getImageMimeType(fullPath);
+                processedImages.push({
+                  type: 'image_url',
+                  image_url: { url: `data:${mimeType};base64,${base64Data}` },
+                });
+              } catch (_fileError) {
+                console.warn(`[ImageGen] Could not load image file: ${file_path}`);
+              }
+            }
+            if (processedImages.length > 0) {
+              images = processedImages;
             }
           }
-          if (processedImages.length > 0) {
-            images = processedImages;
-          }
         }
+      }
+    }
+
+    if ((!images || images.length === 0) && !hasImages) {
+      const fallbackImages = await tryOpenAiImagesGenerations(provider, params.prompt, signal);
+      if (fallbackImages) {
+        images = fallbackImages;
       }
     }
 
@@ -358,7 +452,7 @@ export async function executeImageGeneration(
 
     const firstImage = images[0];
     if (firstImage.type === 'image_url' && firstImage.image_url?.url) {
-      const imagePath = await saveGeneratedImage(firstImage.image_url.url, resolvedWorkspaceDir);
+      const imagePath = await saveGeneratedImage(firstImage.image_url.url, resolvedWorkspaceDir, signal);
       const relativeImagePath = path.relative(resolvedWorkspaceDir, imagePath);
 
       // Strip any inline base64 data URLs from the human-readable text before
@@ -373,7 +467,7 @@ export async function executeImageGeneration(
 
       return {
         success: true,
-        text: `${cleanText}\n\nGenerated image saved to: ${imagePath}`,
+        text: `${cleanText}\n\n![${path.basename(imagePath)}](${relativeImagePath})\n\nGenerated image saved to: ${imagePath}`,
         imagePath,
         relativeImagePath,
       };

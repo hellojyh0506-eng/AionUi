@@ -45,9 +45,14 @@ const RULES: Array<{
     id: 'antigravity',
     match: (p) => !!p.name?.toLowerCase().includes('antigravity'),
   },
+  {
+    id: 'new-api',
+    match: (p) => p.platform === 'new-api',
+  },
 ];
 
 export const isImageGenSupported = (provider: ProviderShape, modelName: string): boolean => {
+  if (/video/i.test(modelName)) return false;
   if (!IMAGE_NAME_PATTERN.test(modelName)) return false;
   return RULES.some((rule) => rule.match(provider));
 };

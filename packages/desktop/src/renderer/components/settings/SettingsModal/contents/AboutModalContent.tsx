@@ -11,7 +11,6 @@ import { useTranslation } from 'react-i18next';
 import classNames from 'classnames';
 import { useSettingsViewMode } from '../settingsViewContext';
 import { isElectronDesktop, openExternalUrl } from '@/renderer/utils/platform';
-import FeedbackReportModal from './FeedbackReportModal';
 import { ipcBridge } from '@/common';
 import { getIncludePrerelease, runUpdateCheck } from '@/renderer/components/settings/checkForUpdatesShared';
 import { UPDATE_AVAILABLE_EVENT } from '@/renderer/components/settings/useUpdateNotificationController';
@@ -41,7 +40,6 @@ const AboutModalContent: React.FC = () => {
   const isElectron = isElectronDesktop();
 
   const [includePrerelease, setIncludePrerelease] = useState(false);
-  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [updateReadyState, setLocalUpdateReadyState] = useState<UpdateReadyState>(() => getUpdateReadyState());
   const [checking, setChecking] = useState(false);
 
@@ -111,28 +109,18 @@ const AboutModalContent: React.FC = () => {
 
   const linkItems: LinkItem[] = [
     {
-      title: t('settings.helpDocumentation'),
-      url: 'https://github.com/iOfficeAI/AionUi/wiki',
+      title: 'EthanToken 官网与充值平台',
+      url: 'https://ethantoken.top',
+      icon: <Right theme='outline' size='16' className='rtl-mirror' />,
+    },
+    {
+      title: '加入微信 / QQ 交流群（技术支持与售后）',
+      onClick: () => window.dispatchEvent(new CustomEvent('ethantoken:open-community-modal')),
       icon: <Right theme='outline' size='16' className='rtl-mirror' />,
     },
     {
       title: t('settings.updateLog'),
-      url: 'https://github.com/iOfficeAI/AionUi/releases',
-      icon: <Right theme='outline' size='16' className='rtl-mirror' />,
-    },
-    {
-      title: t('settings.bugReport'),
-      onClick: () => setShowFeedbackModal(true),
-      icon: <Right theme='outline' size='16' className='rtl-mirror' />,
-    },
-    {
-      title: t('settings.contactMe'),
-      url: 'https://x.com/WailiVery',
-      icon: <Right theme='outline' size='16' className='rtl-mirror' />,
-    },
-    {
-      title: t('settings.officialWebsite'),
-      url: 'https://www.aionui.com',
+      url: 'https://github.com/hellojyh0506-eng/AionUi/releases',
       icon: <Right theme='outline' size='16' className='rtl-mirror' />,
     },
   ];
@@ -162,7 +150,7 @@ const AboutModalContent: React.FC = () => {
               <div
                 className='text-t-primary cursor-pointer hover:text-t-secondary transition-colors p-4px'
                 onClick={() =>
-                  openLink('https://github.com/iOfficeAI/AionUi').catch((error) =>
+                  openLink('https://github.com/hellojyh0506-eng/AionUi').catch((error) =>
                     console.error('Failed to open link:', error)
                   )
                 }
@@ -225,7 +213,6 @@ const AboutModalContent: React.FC = () => {
           </div>
         </div>
       </div>
-      <FeedbackReportModal visible={showFeedbackModal} onCancel={() => setShowFeedbackModal(false)} />
     </div>
   );
 };

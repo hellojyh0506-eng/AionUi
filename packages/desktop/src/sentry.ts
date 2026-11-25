@@ -114,27 +114,7 @@ function isBackendStartupSecondaryEvent(event: { tags?: Record<string, unknown> 
 }
 
 export function initSentry(): void {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    environment: app.isPackaged ? 'production' : 'development',
-    beforeSend(event) {
-      const haystacks = collectEventSearchText(event);
-      if (GPU_CRASH_DROP_PATTERNS.some((re) => haystacks.some((h) => re.test(h)))) {
-        return null;
-      }
-      if (isGpuProcessCrashEvent(event, haystacks)) {
-        return null;
-      }
-      if (isBackendStartupSecondaryEvent(event, haystacks)) {
-        return null;
-      }
-      return event;
-    },
-  });
-
-  Sentry.setTag('app.arch', process.arch);
-  Sentry.setTag('app.version', app.getVersion());
-  Sentry.setTag('os.name', process.platform);
+  // Sentry telemetry is disabled in the EthanToken customized build.
 }
 
 /**
@@ -143,9 +123,7 @@ export function initSentry(): void {
  * a stable device identifier.
  */
 export function setSentryDeviceId(): void {
-  const id = getOrCreateAnalyticsId();
-  Sentry.setUser({ id });
-  Sentry.setTag('device_id', id);
+  // Sentry telemetry is disabled in the EthanToken customized build.
 }
 
 function getBackendStartupDetails(error: unknown): Record<string, unknown> | undefined {
@@ -235,101 +213,8 @@ function getSecondsSince(timestamp: string | undefined): string | undefined {
 
 const BACKEND_STARTUP_FLUSH_TIMEOUT_MS = 2000;
 
-export async function captureBackendStartupFailure(error: unknown): Promise<void> {
+export async function captureBackendStartupFailure(_error: unknown): Promise<void> {
   (globalThis as typeof globalThis & { __backendStartupFailed?: boolean }).__backendStartupFailed = true;
-  const capturedError = error instanceof Error ? error : new Error(String(error));
-  const details = getBackendStartupDetails(error);
-  const failureInfo = classifyBackendStartupFailure(error);
-  const installDiagnostics = collectBackendInstallDiagnostics(details, {
-    appVersion: app.getVersion(),
-    arch: process.arch,
-    execPath: process.execPath,
-    isPackaged: app.isPackaged,
-    platform: process.platform,
-    resourcesPath: process.resourcesPath,
-  });
-  const autoUpdateDiagnostics = readAutoUpdateDiagnostics(app.getPath('userData'));
-  Sentry.withScope((scope) => {
-    scope.setTag('aionui.failure', 'backend_startup');
-    scope.setTag('aionui.backend_startup.reason', failureInfo.reason);
-    if (failureInfo.runtime) {
-      scope.setTag('aionui.backend_startup.runtime', failureInfo.runtime);
-    }
-    if (failureInfo.packageArch) {
-      scope.setTag('aionui.backend_startup.package_arch', failureInfo.packageArch);
-    }
-    if (failureInfo.deviceArch) {
-      scope.setTag('aionui.backend_startup.device_arch', failureInfo.deviceArch);
-    }
-    if (failureInfo.expectedDownloadArch) {
-      scope.setTag('aionui.backend_startup.expected_download_arch', failureInfo.expectedDownloadArch);
-    }
-    if (typeof failureInfo.isRosettaTranslated === 'boolean') {
-      scope.setTag('aionui.backend_startup.rosetta_translated', getBooleanTagValue(failureInfo.isRosettaTranslated));
-    }
-    if (typeof details?.stage === 'string') {
-      scope.setTag('aionui.backend_startup.stage', details.stage);
-    }
-    if (failureInfo.backendBoundaryCode) {
-      scope.setTag('aionui.backend_startup.boundary_code', failureInfo.backendBoundaryCode);
-    }
-    if (failureInfo.backendBoundaryStage) {
-      scope.setTag('aionui.backend_startup.boundary_stage', failureInfo.backendBoundaryStage);
-    }
-    if (failureInfo.localDataIssueKind) {
-      scope.setTag('aionui.backend_startup.local_data_issue_kind', failureInfo.localDataIssueKind);
-    }
-    if (failureInfo.incompleteInstallationKind) {
-      scope.setTag('aionui.backend_startup.incomplete_installation_kind', failureInfo.incompleteInstallationKind);
-    }
-    for (const [tag, value] of [
-      ['aionui.backend_startup.missing_bundled_dir', getBooleanTagValue(failureInfo.missingBundledAioncoreDir)],
-      ['aionui.backend_startup.missing_runtime_dir', getBooleanTagValue(failureInfo.missingRuntimeDir)],
-      ['aionui.backend_startup.missing_binary', getBooleanTagValue(failureInfo.missingBackendBinary)],
-      ['aionui.backend_startup.missing_hub_dir', getBooleanTagValue(failureInfo.missingHubDir)],
-      ['aionui.backend_startup.missing_pet_states_dir', getBooleanTagValue(failureInfo.missingPetStatesDir)],
-      ['aionui.backend_startup.missing_pwa_dir', getBooleanTagValue(failureInfo.missingPwaDir)],
-      ['aionui.backend_startup.install_path_kind', getInstallPathKind(details?.resourcesPath)],
-      ['aionui.backend_startup.last_update_status', getString(autoUpdateDiagnostics?.lastEvent?.status)],
-      [
-        'aionui.backend_startup.health_polling_delayed',
-        getBooleanTagValue(
-          typeof details?.healthCheckPollingDelayed === 'boolean' ? details.healthCheckPollingDelayed : undefined
-        ),
-      ],
-      ['aionui.backend_startup.health_attempts_bucket', getHealthAttemptBucket(details?.healthCheckAttempts)],
-      [
-        'aionui.backend_startup.health_attempt_deficit_bucket',
-        getHealthAttemptBucket(details?.healthCheckAttemptDeficit),
-      ],
-      ['aionui.backend_startup.health_timeout_overrun_bucket', getDurationBucket(details?.healthCheckTimeoutOverrunMs)],
-      ['aionui.backend_startup.health_max_attempt_gap_bucket', getDurationBucket(details?.healthCheckMaxAttemptGapMs)],
-      [
-        'aionui.backend_startup.seconds_since_quit_and_install',
-        getSecondsSince(autoUpdateDiagnostics?.lastQuitAndInstallAt),
-      ],
-    ] as const) {
-      if (value) scope.setTag(tag, value);
-    }
-    if (details) {
-      scope.setContext('aioncore_startup', details);
-      scope.setExtra('aioncore_startup', details);
-    }
-    scope.setContext('aioncore_startup_classification', { ...failureInfo });
-    scope.setExtra('aioncore_startup_classification', failureInfo);
-    scope.setContext('aioncore_install_diagnostics', installDiagnostics);
-    scope.setExtra('aioncore_install_diagnostics', installDiagnostics);
-    if (autoUpdateDiagnostics) {
-      scope.setContext('auto_update_diagnostics', autoUpdateDiagnostics);
-      scope.setExtra('auto_update_diagnostics', autoUpdateDiagnostics);
-    }
-    Sentry.captureException(capturedError);
-  });
-  try {
-    await Sentry.flush(BACKEND_STARTUP_FLUSH_TIMEOUT_MS);
-  } catch {
-    // If Sentry cannot flush during fatal startup, keep shutdown deterministic.
-  }
 }
 
 /**
@@ -548,18 +433,6 @@ async function runStartupLogReport(): Promise<void> {
  * and the missing-DSN path leave `lastReportAt` untouched so the next launch
  * retries.
  */
-export function scheduleStartupLogReport(window: BrowserWindow): void {
-  const trigger = () => {
-    setTimeout(() => {
-      runStartupLogReport().catch((err) => {
-        console.error('[sentry] startup log report failed:', err);
-      });
-    }, STARTUP_DELAY_MS);
-  };
-
-  if (window.webContents.isLoading()) {
-    window.webContents.once('did-finish-load', trigger);
-  } else {
-    trigger();
-  }
+export function scheduleStartupLogReport(_window: BrowserWindow): void {
+  // Startup Sentry log upload is disabled in the EthanToken customized build.
 }
