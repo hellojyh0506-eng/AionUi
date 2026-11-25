@@ -11,7 +11,11 @@
 
 <p align="center">
   <a href="https://ethantoken.top/download" target="_blank">
-    <img src="https://img.shields.io/badge/⬇️%20官网下载-EthanToken%20Desktop-dc6d4a?style=for-the-badge" alt="官网下载" height="44">
+    <img src="https://img.shields.io/badge/⬇️%20官网免代理下载-EthanToken%20Desktop-dc6d4a?style=for-the-badge" alt="官网下载" height="44">
+  </a>
+  &nbsp;
+  <a href="https://ethantoken.top" target="_blank">
+    <img src="https://img.shields.io/badge/🌐%20官方中转站-ethantoken.top-16a34a?style=for-the-badge" alt="官方中转站" height="44">
   </a>
   &nbsp;
   <a href="https://github.com/hellojyh0506-eng/AionUi/releases" target="_blank">
@@ -21,6 +25,10 @@
   <a href="https://qm.qq.com/q/Lq38Kn6bMQ" target="_blank">
     <img src="https://img.shields.io/badge/QQ交流群-1134610506-1677ff?style=for-the-badge&logo=tencentqq&logoColor=white" alt="QQ群 1134610506" height="44">
   </a>
+</p>
+
+<p align="center">
+  官网中转站：<a href="https://ethantoken.top"><strong>https://ethantoken.top</strong></a>（兼容 <a href="https://api.2005716.xyz">https://api.2005716.xyz</a>） · 下载页：<a href="https://ethantoken.top/download">https://ethantoken.top/download</a>
 </p>
 
 <p align="center">
@@ -35,7 +43,7 @@
 
 * **🔐 浏览器一键安全授权 + 多账号秒切**：无需手动复制填写 Base URL 或 API Key，点击“浏览器一键登录”，自动通过本地回环回调同步账号额度、模型列表、默认对话设置，支持多账号一键切换。
 * **🎨 生图 / 生视频开箱即用**：内置修复后的图片生成引擎与 `aionui-image-generation` MCP 工具，附带自动挂载到全助手的 `ethantoken-media` 技能手册，生成的图片直接在对话气泡中渲染预览。
-* **🛡️ 隐私强化与独立更新通道**：已彻底屏蔽原版 Sentry 日志上报与遥测；关闭原版静默覆盖更新，检查更新直连本仓库 Releases。
+* **⚙️ 精简本地基线与专属更新**：精简不必要的诊断上报并预置简体中文及工作区保存偏好，检查更新直连本仓库 Releases。
 * **💬 中文社群支持**：微信交流群「羊毛出在AI身上」可在客户端左下角**交流群**直接扫码加入，QQ 交流群号：`1134610506`（[点击一键加群](https://qm.qq.com/q/Lq38Kn6bMQ)）。
 
 ---

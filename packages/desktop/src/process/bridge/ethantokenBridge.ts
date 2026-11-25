@@ -16,6 +16,9 @@ import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type IProvider } from '@/commo
 import { IMAGE_GEN_ENV_KEYS } from '@/common/config/imageGenerationMcpEnv';
 import { CAPABILITY_PATTERNS } from '@/common/utils/modelCapabilities';
 import { getBuiltinMcpScriptPath } from '../utils/initStorage';
+import { setStartOnBootEnabled } from './applicationBridge';
+import { writeCloseToTraySetting } from '../utils/closeToTraySetting';
+import { createOrUpdateTray, setCloseToTrayEnabled } from '../utils/tray';
 import type { Assistant, UpdateAssistantRequest } from '@/common/types/agent/assistantTypes';
 import type { CreateProviderRequest, UpdateProviderRequest } from '@/common/types/provider/providerApi';
 
@@ -332,6 +335,33 @@ async function fetchUserModels(auth: { accessToken?: string; cookie?: string; us
   return prioritizeChatModels(DEFAULT_MODELS);
 }
 
+async function fetchModelsByApiKey(apiKey: string): Promise<string[] | null> {
+  try {
+    const resp = await fetch(`${ETHANTOKEN_API_BASE_URL}/models`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as { data?: Array<{ id?: string }> };
+    const ids = Array.isArray(data?.data)
+      ? data.data.map((m) => (typeof m?.id === 'string' ? m.id.trim() : '')).filter(Boolean)
+      : [];
+    return ids.length > 0 ? prioritizeChatModels(ids) : null;
+  } catch {
+    return null;
+  }
+}
+
+function haveSameModelSet(a?: string[], b?: string[]): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  const sa = [...a].toSorted();
+  const sb = [...b].toSorted();
+  return sa.every((v, i) => v === sb[i]);
+}
+
 async function upsertEthanTokenProvider(apiKey: string, models: string[]): Promise<string> {
   const existingList = (await httpRequest<IProvider[]>('GET', '/api/providers')) || [];
   const existing = existingList.find(
@@ -510,6 +540,13 @@ async function applyAuthorizedPayload(payload: DesktopAuthCallbackPayload): Prom
 
 let activeAuthCancel: ((reason?: string) => void) | null = null;
 
+const ALLOWED_AUTH_ORIGINS = new Set([
+  'https://ethantoken.top',
+  'https://api.2005716.xyz',
+  'https://cf.ethantoken.top',
+  'https://ai.dflow.top',
+]);
+
 async function loginViaSystemBrowser(): Promise<EthanTokenAccountState> {
   if (activeAuthCancel) {
     activeAuthCancel('已重新发起浏览器授权');
@@ -523,7 +560,10 @@ async function loginViaSystemBrowser(): Promise<EthanTokenAccountState> {
     let timeoutTimer: NodeJS.Timeout | null = null;
 
     const server = http.createServer((req, res) => {
-      res.setHeader('Access-Control-Allow-Origin', ETHANTOKEN_BASE_URL);
+      const requestOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
+      const allowedOrigin = ALLOWED_AUTH_ORIGINS.has(requestOrigin) ? requestOrigin : ETHANTOKEN_BASE_URL;
+      res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+      res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -622,14 +662,17 @@ const DEFAULT_USER_PRESETS: Record<string, unknown> = {
   'upload.saveToWorkspace': true,
   'workspace.pasteConfirm': true,
   'system.notificationEnabled': true,
-  'system.closeToTray': false,
+  'system.closeToTray': true,
   'webui.desktop.enabled': false,
   'pet.enabled': false,
 };
 
+let presetsApplied = false;
+
 async function ensureDefaultUserPresets(): Promise<void> {
+  if (presetsApplied) return;
   try {
-    const keys = Object.keys(DEFAULT_USER_PRESETS);
+    const keys = [...Object.keys(DEFAULT_USER_PRESETS), 'ethantoken.bootDefaultApplied'];
     const current =
       (await httpRequest<Record<string, unknown>>(
         'GET',
@@ -641,9 +684,24 @@ async function ensureDefaultUserPresets(): Promise<void> {
         updates[key] = defaultValue;
       }
     }
+
+    if (current['system.closeToTray'] === undefined || current['system.closeToTray'] === null) {
+      await writeCloseToTraySetting(true);
+      setCloseToTrayEnabled(true);
+      createOrUpdateTray();
+    }
+
+    if (!current['ethantoken.bootDefaultApplied']) {
+      if (app.isPackaged) {
+        setStartOnBootEnabled(true);
+      }
+      updates['ethantoken.bootDefaultApplied'] = true;
+    }
+
     if (Object.keys(updates).length > 0) {
       await httpRequest<void>('PUT', '/api/settings/client', updates);
     }
+    presetsApplied = true;
   } catch (err) {
     console.warn('[EthanToken] default user presets skipped:', err);
   }
@@ -858,14 +916,28 @@ export function initEthanTokenBridge(): void {
         });
       }
 
-      const validUser = selfRes && selfRes.status !== 401 && selfRes.json.success ? selfRes.json.data : null;
+      let validUser = selfRes && selfRes.status !== 401 && selfRes.json.success ? selfRes.json.data : null;
 
       let apiKey = current.apiKey;
       if ((!apiKey || apiKey.includes('*')) && existing?.api_key && !existing.api_key.includes('*')) {
         apiKey = existing.api_key;
       }
 
-      const needsProviderRepair =
+      if (!validUser && apiKey && !apiKey.includes('*')) {
+        try {
+          const fallbackRes = await newApiFetch<NewApiUser>('/api/desktop/quota', {
+            accessToken: apiKey,
+            userId: current.userId,
+          });
+          if (fallbackRes.status !== 401 && fallbackRes.json.success && fallbackRes.json.data) {
+            validUser = fallbackRes.json.data;
+          }
+        } catch {
+          // ignore desktop quota fallback error and keep last synced snapshot if key exists
+        }
+      }
+
+      let needsProviderRepair =
         !existing ||
         !existing.api_key ||
         existing.api_key.includes('*') ||
@@ -874,6 +946,14 @@ export function initEthanTokenBridge(): void {
 
       let providerId = existing?.id || current.providerId;
       let models = prioritizeChatModels(current.models || existing?.models || DEFAULT_MODELS);
+
+      if (apiKey && !apiKey.includes('*')) {
+        const liveModels = await fetchModelsByApiKey(apiKey);
+        if (liveModels && liveModels.length > 0 && !haveSameModelSet(existing?.models, liveModels)) {
+          models = liveModels;
+          needsProviderRepair = true;
+        }
+      }
 
       if (needsProviderRepair) {
         if (validUser && current.accessToken) {
@@ -904,7 +984,7 @@ export function initEthanTokenBridge(): void {
       const nextStore = upsertAccountInStore(updated, true);
 
       if (!validUser) {
-        return toAccountState(nextStore, '网页登录态已到期（不影响已同步的 API 聊天），点此重新授权即可刷新余额');
+        return toAccountState(nextStore, '登录态已过期');
       }
       return toAccountState(nextStore);
     } catch (err) {

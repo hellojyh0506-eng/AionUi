@@ -442,11 +442,11 @@ const Layout: React.FC<{
                         }
                       }}
                     >
-                      AionUi
+                      EthanToken
                     </div>
                   </Tooltip>
                 ) : (
-                  <div className='text-16px text-t-primary collapsed-hidden font-semibold'>AionUi</div>
+                  <div className='text-16px text-t-primary collapsed-hidden font-semibold'>EthanToken</div>
                 )}
                 {isMobile && !collapsed && (
                   <button

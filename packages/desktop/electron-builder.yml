@@ -117,16 +117,16 @@ win:
     - nsis
     #    - msi
   icon: resources/app.ico # Use the checked-in Windows icon resource for executable metadata/icon patching
-  artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+  artifactName: EthanToken-Desktop-${version}-${os}-${arch}.${ext}
 
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: ${productName}
-  uninstallDisplayName: ${productName}
-  artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+  shortcutName: EthanToken Desktop
+  uninstallDisplayName: EthanToken Desktop
+  artifactName: EthanToken-Desktop-${version}-${os}-${arch}.${ext}
   differentialPackage: false
 
 mac:
@@ -134,7 +134,7 @@ mac:
     - dmg
     - zip
   icon: resources/app.icns
-  artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+  artifactName: EthanToken-Desktop-${version}-${os}-${arch}.${ext}
   category: public.app-category.productivity
   hardenedRuntime: true
   gatekeeperAssess: false
@@ -167,7 +167,7 @@ linux:
   target:
     - deb
   icon: resources/app.png
-  artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+  artifactName: EthanToken-Desktop-${version}-${os}-${arch}.${ext}
   category: Utility
   maintainer: aionui
   vendor: aionui
