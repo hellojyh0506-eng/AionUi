@@ -109,6 +109,25 @@ describe('processImageUri', () => {
     expect(result!.type).toBe('image_url');
   });
 
+  it('should allow an uploaded image inside os.tmpdir()/aionui', async () => {
+    const ws = createWorkspace();
+    const uploadDir = join(tmpdir(), 'aionui', 'test-uploads-' + Date.now());
+    mkdirSync(uploadDir, { recursive: true });
+    cleanupDirs.push(uploadDir);
+    const imgPath = createImageFile(uploadDir, 'ref.png');
+
+    const result = await processImageUri(imgPath, ws);
+
+    expect(result).toBeDefined();
+    expect(result!.type).toBe('image_url');
+  });
+
+  it('should include workspace root context when path traversal is blocked', async () => {
+    const ws = createWorkspace();
+
+    await expect(processImageUri('/etc/passwd', ws)).rejects.toThrow(`outside workspace "${pathResolve(ws)}"`);
+  });
+
   it('should reject a non-image file even when within the workspace', async () => {
     const ws = createWorkspace();
     createNonImageFile(ws, 'notes.txt');

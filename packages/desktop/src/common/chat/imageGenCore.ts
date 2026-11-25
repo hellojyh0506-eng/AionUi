@@ -11,6 +11,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { jsonrepair } from 'jsonrepair';
 import type OpenAI from 'openai';
@@ -30,20 +31,47 @@ const isWithin = (root: string, target: string): boolean => {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 };
 
-/**
- * Resolve `candidate` against `workspaceDir` and verify the result stays inside
- * the workspace. A lexical containment check always applies; when the target
- * exists, it is additionally canonicalized with `realpath` so symlinks inside
- * the workspace cannot escape to arbitrary files outside it. Missing targets
- * resolve lexically — the caller's existence check reports "not found".
- */
-const resolveSafePath = async (workspaceDir: string, candidate: string): Promise<string> => {
-  const resolved = path.resolve(workspaceDir, candidate);
-  if (!isWithin(workspaceDir, resolved)) {
-    throw new Error(`Path traversal blocked: "${candidate}" resolves outside workspace`);
+const getAllowedReadRoots = (workspaceDir: string): string[] => {
+  const candidates = [workspaceDir, path.join(os.tmpdir(), 'aionui')];
+  const unique: string[] = [];
+  for (const dir of candidates) {
+    const resolved = path.resolve(dir);
+    if (!unique.includes(resolved)) unique.push(resolved);
+  }
+  return unique;
+};
+
+const isWithinAnyRoot = (roots: string[], target: string): boolean => roots.some((r) => isWithin(r, target));
+
+const resolveSafePath = async (
+  workspaceDir: string,
+  candidate: string,
+  allowExtraReadRoots = false
+): Promise<string> => {
+  const resolvedWorkspace = path.resolve(workspaceDir);
+  const allowedRoots = allowExtraReadRoots ? getAllowedReadRoots(resolvedWorkspace) : [resolvedWorkspace];
+  const resolved = path.resolve(resolvedWorkspace, candidate);
+
+  // Relative traversal like ../ must stay within workspace; absolute upload paths may reside in temp aionui dir.
+  const isLexicalAllowed = path.isAbsolute(candidate)
+    ? isWithinAnyRoot(allowedRoots, resolved)
+    : isWithin(resolvedWorkspace, resolved);
+  if (!isLexicalAllowed) {
+    throw new Error(
+      `Path traversal blocked: "${candidate}" resolves to "${resolved}" outside workspace "${resolvedWorkspace}" (allowed roots: ${allowedRoots.join(', ')})`
+    );
   }
 
-  const realWorkspaceDir = await fs.promises.realpath(workspaceDir);
+  const realRoots = await Promise.all(
+    allowedRoots.map(async (root) => {
+      try {
+        return await fs.promises.realpath(root);
+      } catch {
+        return root;
+      }
+    })
+  );
+
   let realTarget: string;
   try {
     realTarget = await fs.promises.realpath(resolved);
@@ -53,8 +81,10 @@ const resolveSafePath = async (workspaceDir: string, candidate: string): Promise
     }
     throw error;
   }
-  if (!isWithin(realWorkspaceDir, realTarget)) {
-    throw new Error(`Path traversal blocked: "${candidate}" resolves outside workspace`);
+  if (!isWithinAnyRoot(realRoots, realTarget)) {
+    throw new Error(
+      `Path traversal blocked: "${candidate}" resolves to "${realTarget}" outside workspace "${resolvedWorkspace}" (allowed roots: ${realRoots.join(', ')})`
+    );
   }
   return realTarget;
 };
@@ -175,7 +205,7 @@ export async function processImageUri(imageUri: string, workspaceDir: string): P
     processedUri = imageUri.substring(1);
   }
 
-  const fullPath = await resolveSafePath(workspaceDir, processedUri);
+  const fullPath = await resolveSafePath(workspaceDir, processedUri, true);
 
   try {
     await fs.promises.access(fullPath, fs.constants.F_OK);
@@ -254,7 +284,7 @@ async function resolveImageBinaryForEdit(
   }
 
   const processedUri = imageUri.startsWith('@') ? imageUri.substring(1) : imageUri;
-  const fullPath = await resolveSafePath(workspaceDir, processedUri);
+  const fullPath = await resolveSafePath(workspaceDir, processedUri, true);
   await fs.promises.access(fullPath, fs.constants.F_OK);
   if (!isImageFile(fullPath)) {
     throw new Error(`File is not a supported image type: ${fullPath}`);
@@ -594,7 +624,7 @@ export async function executeImageGeneration(
     const firstImage = images[0];
     if (firstImage.type === 'image_url' && firstImage.image_url?.url) {
       const imagePath = await saveGeneratedImage(firstImage.image_url.url, resolvedWorkspaceDir, signal);
-      const relativeImagePath = path.relative(resolvedWorkspaceDir, imagePath);
+      const relativeImagePath = path.relative(resolvedWorkspaceDir, imagePath).replace(/\\/g, '/');
 
       // Strip any inline base64 data URLs from the human-readable text before
       // returning. The image is already saved to disk and referenced by path,
@@ -608,7 +638,7 @@ export async function executeImageGeneration(
 
       return {
         success: true,
-        text: `${cleanText}\n\n![${path.basename(imagePath)}](${relativeImagePath})\n\nGenerated image saved to: ${imagePath}`,
+        text: `${cleanText}\n\n![${path.basename(imagePath)}](${relativeImagePath})\n\nGenerated image saved to: ${imagePath}\nWorkspace: ${resolvedWorkspaceDir}\nRelative path: ${relativeImagePath}`,
         imagePath,
         relativeImagePath,
       };

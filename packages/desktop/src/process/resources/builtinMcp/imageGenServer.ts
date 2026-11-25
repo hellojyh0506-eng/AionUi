@@ -113,10 +113,10 @@ Output:
       }
 
       const proxy = process.env.AIONUI_IMG_PROXY || undefined;
-      // Trusted workspace root: the MCP server inherits the agent process cwd,
-      // which the backend sets to the conversation workspace. Never accept a
-      // workspace path from the model (path traversal boundary).
-      const workspaceDir = process.cwd();
+      // Prefer AIONUI_WORKSPACE injected by the agent runtime (since the spawned
+      // MCP process cwd often inherits app userData instead of conversation workspace).
+      const workspaceDir =
+        process.env.AIONUI_WORKSPACE?.trim() || process.env.WORKSPACE_DIR?.trim() || process.cwd();
 
       const result = await executeImageGeneration(
         { prompt, image_uris, model, size, quality, n },
