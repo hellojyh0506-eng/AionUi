@@ -6,8 +6,12 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  isHtmlFilePath,
+  isImageFilePath,
+  resolveInlineAbsoluteFileReference,
   resolveLocalFileLinkPath,
   resolveLocalFileLinkReference,
+  resolveWorkspaceRelativeCandidate,
   toLocalFileHref,
 } from '@/renderer/components/Markdown/markdownUtils';
 
@@ -147,5 +151,38 @@ describe('resolveLocalFileLinkPath', () => {
       'file:///C:/Users/Administrator/AppData/Roaming/AionUi/report.xlsx'
     );
     expect(toLocalFileHref('/var/folders/demo/report.xlsx')).toBe('file:///var/folders/demo/report.xlsx');
+  });
+
+  it('recognizes absolute inline code paths including spaces while rejecting shell commands', () => {
+    expect(resolveInlineAbsoluteFileReference('D:\\AllWorkspace\\Ethan_Workspace\\pelican-motors\\index.html')).toEqual({
+      filePath: 'D:\\AllWorkspace\\Ethan_Workspace\\pelican-motors\\index.html',
+      rawReference: 'D:\\AllWorkspace\\Ethan_Workspace\\pelican-motors\\index.html',
+    });
+    expect(resolveInlineAbsoluteFileReference('C:\\Users\\Demo User\\My Report 2026.pdf#L10')).toEqual({
+      filePath: 'C:\\Users\\Demo User\\My Report 2026.pdf',
+      rawReference: 'C:\\Users\\Demo User\\My Report 2026.pdf#L10',
+      line: 10,
+    });
+    expect(resolveInlineAbsoluteFileReference('C:\\Python312\\python.exe script.py --port 8080')).toBeNull();
+    expect(resolveInlineAbsoluteFileReference('D:\\work\\run.bat && echo ok')).toBeNull();
+    expect(resolveInlineAbsoluteFileReference('npm install')).toBeNull();
+  });
+
+  it('builds workspace-relative candidates safely and identifies image/html extensions', () => {
+    expect(resolveWorkspaceRelativeCandidate('index.html', 'D:\\AllWorkspace\\Ethan_Workspace')).toEqual({
+      filePath: 'D:\\AllWorkspace\\Ethan_Workspace\\index.html',
+      rawReference: 'D:\\AllWorkspace\\Ethan_Workspace\\index.html',
+    });
+    expect(resolveWorkspaceRelativeCandidate('pelican-motors/index.html:12', 'D:\\AllWorkspace\\Ethan_Workspace')).toEqual({
+      filePath: 'D:\\AllWorkspace\\Ethan_Workspace\\pelican-motors\\index.html',
+      rawReference: 'D:\\AllWorkspace\\Ethan_Workspace\\pelican-motors\\index.html:12',
+      line: 12,
+    });
+    expect(resolveWorkspaceRelativeCandidate('../escape.html', 'D:\\AllWorkspace\\Ethan_Workspace')).toBeNull();
+    expect(resolveWorkspaceRelativeCandidate('npm', 'D:\\AllWorkspace\\Ethan_Workspace')).toBeNull();
+    expect(isImageFilePath('D:\\out\\poster.PNG')).toBe(true);
+    expect(isImageFilePath('D:\\out\\index.html')).toBe(false);
+    expect(isHtmlFilePath('D:\\AllWorkspace\\pelican-motors\\index.html')).toBe(true);
+    expect(isHtmlFilePath('D:\\AllWorkspace\\pelican-motors\\app.ts:10')).toBe(false);
   });
 });

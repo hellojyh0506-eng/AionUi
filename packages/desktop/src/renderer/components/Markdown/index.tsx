@@ -14,23 +14,62 @@ import 'katex/dist/katex.min.css';
 
 import { openExternalUrl } from '@/renderer/utils/platform';
 import { parseHttpUrl } from '@/renderer/utils/url';
+import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { useOptionalPreviewContext } from '@/renderer/pages/conversation/Preview/context/PreviewContext';
 import classNames from 'classnames';
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { convertLatexDelimiters } from '@renderer/utils/chat/latexDelimiters';
 import LocalImageView from '@renderer/components/media/LocalImageView';
 import CodeBlock from './CodeBlock';
 import LocalFileLink from './LocalFileLink';
+import { resolveWorkspaceFileByCandidate } from './localFileLookup';
+import { rehypeMarkStandaloneInlineCode, remarkBareLocalFilePaths } from './markdownLocalFilePlugins';
 import ShadowView from './ShadowView';
 import { DEFAULT_REHYPE_PLUGINS, MARKDOWN_REMARK_PLUGINS, MarkdownTable, MarkdownTd } from './markdownComponents';
-import { resolveLocalFileLinkPath, resolveLocalFileLinkReference } from './markdownUtils';
+import {
+  resolveLocalFileLinkPath,
+  resolveLocalFileLinkReference,
+  resolveWorkspaceRelativeCandidate,
+} from './markdownUtils';
 import type { LocalFileLinkReference } from './markdownUtils';
 
 const isLocalFilePath = (src: string): boolean => {
   if (src.startsWith('http://') || src.startsWith('https://')) return false;
   if (src.startsWith('data:')) return false;
   return true;
+};
+
+const WorkspaceRelativeAnchor: React.FC<{
+  rawHref: string;
+  workspace: string;
+  onOpen: (path: string, reference?: LocalFileLinkReference) => void | Promise<void>;
+  anchorProps: React.AnchorHTMLAttributes<HTMLAnchorElement>;
+  onAnchorClick: (e: React.MouseEvent<HTMLAnchorElement>) => void;
+}> = ({ rawHref, workspace, onOpen, anchorProps, onAnchorClick }) => {
+  const [resolvedRef, setResolvedRef] = useState<LocalFileLinkReference | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void resolveWorkspaceFileByCandidate(rawHref, workspace).then((match) => {
+      if (!cancelled) {
+        setResolvedRef(match);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [rawHref, workspace]);
+
+  if (resolvedRef) {
+    return (
+      <LocalFileLink reference={resolvedRef} onOpen={onOpen}>
+        {anchorProps.children}
+      </LocalFileLink>
+    );
+  }
+
+  return <a {...anchorProps} href={anchorProps.href} target='_blank' rel='noreferrer' onClick={onAnchorClick} />;
 };
 
 type MarkdownViewProps = {
@@ -48,6 +87,7 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
   ({ hiddenCodeCopyButton, codeStyle, className, onRef, onLocalFileLink, allowHtml, children: childrenProp }) => {
     const { t } = useTranslation();
     const preview = useOptionalPreviewContext();
+    const workspace = useConversationContextSafe()?.workspace;
 
     const normalizedChildren = useMemo(() => {
       if (typeof childrenProp === 'string') {
@@ -94,6 +134,8 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
             codeStyle={codeStyle}
             hiddenCodeCopyButton={hiddenCodeCopyButton}
             diagramPanZoom
+            onLocalFileLink={onLocalFileLink}
+            workspace={workspace}
           />
         ),
         a: ({ node: _node, ...rest }: Record<string, unknown>) => {
@@ -105,6 +147,17 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
               <LocalFileLink reference={localFileReference} onOpen={onLocalFileLink}>
                 {anchorProps.children}
               </LocalFileLink>
+            );
+          }
+          if (onLocalFileLink && workspace && resolveWorkspaceRelativeCandidate(rawHref, workspace)) {
+            return (
+              <WorkspaceRelativeAnchor
+                rawHref={rawHref}
+                workspace={workspace}
+                onOpen={onLocalFileLink}
+                anchorProps={anchorProps}
+                onAnchorClick={handleLinkClick}
+              />
             );
           }
           return (
@@ -122,17 +175,25 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
           return <img {...imgProps} alt={imgProps.alt || ''} />;
         },
       }),
-      [codeStyle, hiddenCodeCopyButton, handleLinkClick, onLocalFileLink]
+      [codeStyle, hiddenCodeCopyButton, handleLinkClick, onLocalFileLink, workspace]
     );
 
-    const rehypePlugins = useMemo(() => (allowHtml ? [rehypeRaw, rehypeKatex] : DEFAULT_REHYPE_PLUGINS), [allowHtml]);
+    const remarkPlugins = useMemo(
+      () => (onLocalFileLink ? [...MARKDOWN_REMARK_PLUGINS, remarkBareLocalFilePaths] : MARKDOWN_REMARK_PLUGINS),
+      [onLocalFileLink]
+    );
+
+    const rehypePlugins = useMemo(() => {
+      const base = allowHtml ? [rehypeRaw, rehypeKatex] : DEFAULT_REHYPE_PLUGINS;
+      return onLocalFileLink ? [...(base || []), rehypeMarkStandaloneInlineCode] : base;
+    }, [allowHtml, onLocalFileLink]);
 
     return (
       <div className={classNames('relative w-full', className)}>
         <ShadowView>
           <div ref={onRef} className='markdown-shadow-body'>
             <ReactMarkdown
-              remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+              remarkPlugins={remarkPlugins}
               rehypePlugins={rehypePlugins}
               components={components}
               urlTransform={(url) => (resolveLocalFileLinkPath(url) || isLocalFilePath(url) ? url : defaultUrlTransform(url))}

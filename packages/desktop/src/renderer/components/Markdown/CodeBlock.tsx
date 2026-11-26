@@ -12,9 +12,11 @@ import { useTranslation } from 'react-i18next';
 import SyntaxHighlighter from 'react-syntax-highlighter';
 import { vs, vs2015 } from 'react-syntax-highlighter/dist/esm/styles/hljs';
 import { copyText } from '@/renderer/utils/ui/clipboard';
+import InlineLocalFileCode from './InlineLocalFileCode';
 import MermaidBlock from './MermaidBlock';
 import WavedromBlock from './WavedromBlock';
 import { formatCode, getDiffLineStyle } from './markdownUtils';
+import type { LocalFileLinkReference } from './markdownUtils';
 
 const PREVIEW_LINES = 3;
 // code span: font-size 13px, line-height 20px (per ShadowView injection)
@@ -33,6 +35,10 @@ type CodeBlockProps = {
   // messages and the preview panel both opt in; other surfaces keep diagrams
   // static.
   diagramPanZoom?: boolean;
+  onLocalFileLink?: (path: string, reference?: LocalFileLinkReference) => void | Promise<void>;
+  workspace?: string;
+  dataStandalone?: string;
+  'data-standalone'?: string;
   [key: string]: unknown;
 };
 
@@ -70,6 +76,10 @@ function CodeBlock(props: CodeBlockProps) {
     hiddenCodeCopyButton: _h,
     codeStyle: _c,
     diagramPanZoom: _dpz,
+    onLocalFileLink,
+    workspace,
+    dataStandalone,
+    'data-standalone': dataStandaloneAttr,
     ...rest
   } = props;
   const match = /language-(\w+)/.exec(className || '');
@@ -99,6 +109,18 @@ function CodeBlock(props: CodeBlockProps) {
 
   // Inline code (single line)
   if (!String(children).includes('\n')) {
+    if (onLocalFileLink && !/language-/.test(className || '')) {
+      return (
+        <InlineLocalFileCode
+          text={String(children)}
+          standalone={dataStandaloneAttr === 'true' || dataStandalone === 'true'}
+          workspace={workspace}
+          onOpen={onLocalFileLink}
+          className={className}
+          codeProps={rest}
+        />
+      );
+    }
     return (
       <code {...rest} className={className} style={{ fontWeight: 'bold' }}>
         {children}

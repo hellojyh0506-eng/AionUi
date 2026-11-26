@@ -222,6 +222,139 @@ export const toLocalFileHref = (filePath: string): string => {
   return encodeURI(withScheme);
 };
 
+const INLINE_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg']);
+const HTML_FILE_EXTENSIONS = new Set(['.html', '.htm']);
+const URL_WITH_SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
+const SHELL_OPERATOR_RE = /[\r\n\t`|;><]|&&|\|\|/;
+const SHELL_FLAG_OR_QUOTE_RE = /(?:^|\s)--?[A-Za-z0-9]|["']/;
+
+const getPathExtensionLower = (filePath: string): string => {
+  const clean = stripLocalFileLocationSuffix(filePath).cleanPath;
+  const base = clean.split(/[\\/]/).pop() || '';
+  const dotIndex = base.lastIndexOf('.');
+  return dotIndex > 0 ? base.slice(dotIndex).toLowerCase() : '';
+};
+
+export const isImageFilePath = (filePath: string): boolean => INLINE_IMAGE_EXTENSIONS.has(getPathExtensionLower(filePath));
+
+export const isHtmlFilePath = (filePath: string): boolean => HTML_FILE_EXTENSIONS.has(getPathExtensionLower(filePath));
+
+export const isShellCommandText = (text: string): boolean => {
+  if (SHELL_OPERATOR_RE.test(text)) return true;
+  if (/\s/.test(text) && SHELL_FLAG_OR_QUOTE_RE.test(text)) return true;
+  return false;
+};
+
+export const stripLocalFileLocationSuffix = (
+  rawText: string
+): { cleanPath: string; suffix: string; line?: number; column?: number; endLine?: number } => {
+  const hashSplit = splitHashLocation(rawText);
+  if (hashSplit.hashLocation?.line != null) {
+    const suffix = `#L${hashSplit.hashLocation.line}${hashSplit.hashLocation.endLine == null ? '' : `-L${hashSplit.hashLocation.endLine}`}`;
+    return {
+      cleanPath: hashSplit.filePath,
+      suffix,
+      ...hashSplit.hashLocation,
+    };
+  }
+
+  const lineColMatch = /^(.*):(\d+):(\d+)$/.exec(rawText);
+  if (lineColMatch) {
+    return {
+      cleanPath: lineColMatch[1],
+      suffix: `:${lineColMatch[2]}:${lineColMatch[3]}`,
+      line: Number(lineColMatch[2]),
+      column: Number(lineColMatch[3]),
+    };
+  }
+
+  const lineMatch = /^(.*):(\d+)$/.exec(rawText);
+  if (lineMatch && !/^[A-Za-z]:$/.test(lineMatch[1])) {
+    return {
+      cleanPath: lineMatch[1],
+      suffix: `:${lineMatch[2]}`,
+      line: Number(lineMatch[2]),
+    };
+  }
+
+  return { cleanPath: rawText, suffix: '' };
+};
+
+export const joinWorkspacePath = (workspace: string, relativePath: string): string => {
+  const useBackslash = workspace.includes('\\') || /^[A-Za-z]:/.test(workspace);
+  const sep = useBackslash ? '\\' : '/';
+  const base = workspace.replace(/[\\/]+$/, '');
+  const rel = relativePath.replace(/^[./\\]+/, '').replace(/[\\/]+/g, sep);
+  return rel ? `${base}${sep}${rel}` : base;
+};
+
+export const isBareWorkspaceFilename = (cleanRelativePath: string): boolean => {
+  const stripped = cleanRelativePath.replace(/^\.[\\/]/, '');
+  return !stripped.includes('/') && !stripped.includes('\\');
+};
+
+/**
+ * Parse an unambiguous absolute local file reference from inline code text,
+ * rejecting shell commands and multi-line snippets.
+ */
+export const resolveInlineAbsoluteFileReference = (rawText: string): LocalFileLinkReference | null => {
+  const trimmed = rawText.trim();
+  if (!trimmed || trimmed.length > 512 || isShellCommandText(trimmed)) {
+    return null;
+  }
+  if (URL_WITH_SCHEME_RE.test(trimmed) && !/^file:\/\//i.test(trimmed)) {
+    return null;
+  }
+  return resolveLocalFileLinkReference(trimmed);
+};
+
+/**
+ * Build a candidate local file reference for a workspace-relative path or
+ * filename (e.g. `index.html`, `pelican-motors/index.html:12`). Callers must
+ * confirm existence before converting it into an interactive chip.
+ */
+export const resolveWorkspaceRelativeCandidate = (
+  rawText: string,
+  workspace?: string
+): LocalFileLinkReference | null => {
+  if (!workspace) return null;
+  const trimmed = rawText.trim();
+  if (!trimmed || trimmed.length > 512 || isShellCommandText(trimmed)) {
+    return null;
+  }
+  if (URL_WITH_SCHEME_RE.test(trimmed) || /^file:/i.test(trimmed)) {
+    return null;
+  }
+  if (resolveLocalFileLinkReference(trimmed)) {
+    return null;
+  }
+
+  const { cleanPath, suffix, line, column, endLine } = stripLocalFileLocationSuffix(trimmed);
+  if (!cleanPath || /^[\\/~-]/.test(cleanPath) || /^[A-Za-z]:/.test(cleanPath)) {
+    return null;
+  }
+
+  const normalized = cleanPath.replace(/\\/g, '/').replace(/^\.\//, '');
+  const segments = normalized.split('/').filter(Boolean);
+  if (segments.length === 0 || segments.some((seg) => seg === '..' || seg === '.')) {
+    return null;
+  }
+
+  const baseName = segments[segments.length - 1];
+  if (!/^[^/]+\.[A-Za-z0-9]{1,12}$/.test(baseName)) {
+    return null;
+  }
+
+  const filePath = joinWorkspacePath(workspace, normalized);
+  return {
+    filePath,
+    rawReference: `${filePath}${suffix}`,
+    ...(line != null ? { line } : {}),
+    ...(column != null ? { column } : {}),
+    ...(endLine != null ? { endLine } : {}),
+  };
+};
+
 /**
  * Get line background style for diff rendering.
  * Highlights additions (green), deletions (red), and hunk headers (blue).

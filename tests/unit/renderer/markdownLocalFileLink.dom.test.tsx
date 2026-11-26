@@ -57,6 +57,8 @@ vi.mock('@arco-design/web-react', () => ({
 
 vi.mock('@icon-park/react', () => ({
   Copy: () => <span data-testid='copy-icon' />,
+  FolderOpen: () => <span data-testid='folder-open-icon' />,
+  Earth: () => <span data-testid='earth-icon' />,
 }));
 
 vi.mock('react-i18next', () => ({

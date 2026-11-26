@@ -135,6 +135,31 @@ export const createInitStyle = (
     background: var(--bg-3);
     color: var(--text-primary);
   }
+  .markdown-inline-image-card {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    max-width: 100%;
+    margin: 4px 0;
+  }
+  .markdown-inline-image-preview {
+    display: inline-block;
+    max-width: min(100%, 420px);
+    padding: 0;
+    border: 1px solid var(--bg-3);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--bg-2);
+    cursor: pointer;
+    line-height: 0;
+  }
+  .markdown-inline-image-preview img {
+    display: block;
+    max-width: 100%;
+    max-height: 360px;
+    object-fit: contain;
+  }
   h1{
     font-size: 24px;
     line-height: 32px;

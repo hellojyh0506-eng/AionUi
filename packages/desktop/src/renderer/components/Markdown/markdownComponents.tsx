@@ -43,7 +43,13 @@ export const SANITIZED_HTML_REHYPE_PLUGINS: ReactMarkdownOptions['rehypePlugins'
       ...defaultSchema,
       protocols: {
         ...defaultSchema.protocols,
-        src: [...(defaultSchema.protocols?.src || []), 'data', 'file'],
+        src: [
+          ...(defaultSchema.protocols?.src || []),
+          'data',
+          'file',
+          // Allow Windows drive letter paths (e.g. C:\path\img.png) emitted in markdown images
+          ...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''),
+        ],
         href: [
           ...(defaultSchema.protocols?.href || []),
           'file',
