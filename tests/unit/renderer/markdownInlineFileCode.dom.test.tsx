@@ -224,4 +224,25 @@ describe('MarkdownView inline local file and standalone image rendering', () => 
       expect.objectContaining({ filePath: hostsPath, rawReference: hostsPath })
     );
   });
+
+  it('keeps full Windows filenames with spaces, # (C#), and Chinese parentheses intact without truncating', () => {
+    const onLocalFileLink = vi.fn();
+    const spacePath = 'C:\\Users\\86137\\Desktop\\2025 春招 C# 基础笔试题（原答案 + 新手易懂版答案）.html';
+
+    render(
+      <MarkdownView onLocalFileLink={onLocalFileLink}>
+        {`${spacePath}\n\n"${spacePath}"`}
+      </MarkdownView>
+    );
+
+    const expectedFileName = '2025 春招 C# 基础笔试题（原答案 + 新手易懂版答案）.html';
+    const buttons = screen.getAllByRole('button', { name: expectedFileName });
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[0]);
+    expect(onLocalFileLink).toHaveBeenCalledWith(
+      spacePath,
+      expect.objectContaining({ filePath: spacePath, rawReference: spacePath })
+    );
+    expect(screen.getAllByRole('button', { name: 'Open in system browser' })).toHaveLength(2);
+  });
 });

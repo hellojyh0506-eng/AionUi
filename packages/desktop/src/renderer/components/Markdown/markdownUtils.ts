@@ -77,21 +77,33 @@ const parseHashLocation = (hash: string): LocalFileLocation | null => {
 };
 
 const splitHashLocation = (href: string): LocalFilePathCandidate => {
-  const hashIndex = href.indexOf('#');
+  const hashIndex = href.lastIndexOf('#');
   if (hashIndex < 0) return { filePath: href };
 
-  const hashLocation = parseHashLocation(href.slice(hashIndex));
-  if (!hashLocation) {
+  const lastSep = Math.max(href.lastIndexOf('/'), href.lastIndexOf('\\'));
+  if (hashIndex < lastSep) {
+    return { filePath: href };
+  }
+
+  const fragment = href.slice(hashIndex);
+  const hashLocation = parseHashLocation(fragment);
+  if (hashLocation) {
+    return {
+      filePath: href.slice(0, hashIndex),
+      hashLocation,
+    };
+  }
+
+  // Only treat trailing `#L...` style fragments (e.g. `#l10`, `#L10-l20`) as
+  // malformed line anchors; keep literal `#` in filenames like `C# notes.html`.
+  if (/^#l(?:\d|$|-)/i.test(fragment)) {
     return {
       filePath: href.slice(0, hashIndex),
       hasInvalidHash: true,
     };
   }
 
-  return {
-    filePath: href.slice(0, hashIndex),
-    hashLocation,
-  };
+  return { filePath: href };
 };
 
 const normalizeFilePath = (path: string): string => {
@@ -298,7 +310,13 @@ export const isBareWorkspaceFilename = (cleanRelativePath: string): boolean => {
  * rejecting shell commands and multi-line snippets.
  */
 export const resolveInlineAbsoluteFileReference = (rawText: string): LocalFileLinkReference | null => {
-  const trimmed = rawText.trim();
+  let trimmed = rawText.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    trimmed = trimmed.slice(1, -1).trim();
+  }
   if (!trimmed || trimmed.length > 512 || isShellCommandText(trimmed)) {
     return null;
   }

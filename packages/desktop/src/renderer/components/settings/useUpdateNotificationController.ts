@@ -443,6 +443,17 @@ export const useUpdateNotificationController = () => {
   const showManualInstallFallback = Boolean(state.autoUpdateAvailable && state.updateInfo?.recommendedAsset);
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('aionui-update-badge-sync', {
+          detail: {
+            status: state.status,
+            version: versionLabel || undefined,
+            percent: state.progress.percent,
+          },
+        })
+      );
+    }
     if ((state.status === 'downloaded' || state.status === 'preparing-install') && versionLabel) {
       setUpdateReadyState({
         ready: true,
@@ -458,7 +469,7 @@ export const useUpdateNotificationController = () => {
         version: '',
       });
     }
-  }, [state.downloadPath, state.status, versionLabel]);
+  }, [state.downloadPath, state.progress.percent, state.status, versionLabel]);
 
   return {
     state,

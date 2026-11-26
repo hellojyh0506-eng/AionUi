@@ -166,6 +166,14 @@ describe('resolveLocalFileLinkPath', () => {
     expect(resolveInlineAbsoluteFileReference('C:\\Python312\\python.exe script.py --port 8080')).toBeNull();
     expect(resolveInlineAbsoluteFileReference('D:\\work\\run.bat && echo ok')).toBeNull();
     expect(resolveInlineAbsoluteFileReference('npm install')).toBeNull();
+    expect(
+      resolveInlineAbsoluteFileReference(
+        '"C:\\Users\\86137\\Desktop\\2025 春招 C# 基础笔试题（原答案 + 新手易懂版答案）.html"'
+      )
+    ).toEqual({
+      filePath: 'C:\\Users\\86137\\Desktop\\2025 春招 C# 基础笔试题（原答案 + 新手易懂版答案）.html',
+      rawReference: 'C:\\Users\\86137\\Desktop\\2025 春招 C# 基础笔试题（原答案 + 新手易懂版答案）.html',
+    });
   });
 
   it('builds workspace-relative candidates safely and identifies image/html extensions', () => {

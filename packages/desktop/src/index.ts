@@ -564,6 +564,15 @@ const createWindow = ({ showOnReady = true }: { showOnReady?: boolean } = {}): v
           setTimeout(() => {
             void autoUpdaterService.checkForUpdatesAndNotify();
           }, 3000);
+          // Periodically re-check in the background so long-running desktop
+          // sessions receive update notifications without requiring a restart.
+          const updatePollTimer = setInterval(
+            () => {
+              void autoUpdaterService.checkForUpdatesAndNotify();
+            },
+            2 * 60 * 60 * 1000
+          );
+          updatePollTimer.unref?.();
         }
       })
       .catch((error) => {

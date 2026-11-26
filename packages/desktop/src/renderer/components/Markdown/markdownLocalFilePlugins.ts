@@ -15,7 +15,7 @@ type AstNode = {
 };
 
 const BARE_WIN_FILE_PATH_RE =
-  /(?:^|(?<=[\s：:（([【"'=|、]))([A-Za-z]:[\\/][^\s`"'<>()（）[\]【】，。；;!！?？|、]+?(?:\.[A-Za-z0-9]{1,12}|[\\/][^\s`"'<>()（）[\]【】，。；;!！?？|、\\/]+)(?:#L\d+(?:-L\d+)?|:\d+(?::\d+)?)?)(?=$|[\s，。；;：:)）\]】"'!！?？|、])/g;
+  /(?:^|(?<=[\s：:（([【'=|、]))(?:"([A-Za-z]:[\\/][^"\r\n<>|]+)"|([A-Za-z]:[\\/][^\r\n`"'<>[\]【】，。；;!！?？|、:：]+?\.[A-Za-z0-9]{1,12}(?:#L\d+(?:-L\d+)?|:\d+(?::\d+)?)?)(?=$|[\s，。；;：:)\]】"'!！?？|、）])|([A-Za-z]:[\\/][^\s`"'<>()（）[\]【】，。；;!！?？|、:：]+[\\/][^\s`"'<>()（）[\]【】，。；;!！?？|、:：\\/]+)(?=$|[\s，。；;：:)）\]】"'!！?？|、]))/g;
 
 const SKIP_BARE_PARENT_TYPES = new Set(['link', 'linkReference', 'heading', 'inlineCode', 'code', 'html']);
 
@@ -29,7 +29,9 @@ const splitBarePathTextNode = (node: AstNode): AstNode[] | null => {
   let match: RegExpExecArray | null;
 
   while ((match = BARE_WIN_FILE_PATH_RE.exec(value)) !== null) {
-    const candidate = match[1];
+    const candidate = match[1] ?? match[2] ?? match[3];
+    if (!candidate) continue;
+    const fullMatchLen = match[0].length;
     const start = match.index;
     if (isShellCommandText(candidate)) {
       continue;
@@ -38,7 +40,7 @@ const splitBarePathTextNode = (node: AstNode): AstNode[] | null => {
       parts.push({ type: 'text', value: value.slice(lastIndex, start) });
     }
     parts.push({ type: 'inlineCode', value: candidate });
-    lastIndex = start + candidate.length;
+    lastIndex = start + fullMatchLen;
   }
 
   if (parts.length === 0) return null;
