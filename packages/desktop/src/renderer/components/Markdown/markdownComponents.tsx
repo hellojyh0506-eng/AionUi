@@ -12,13 +12,15 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import { remarkSanitizeAutolinkTrailing } from './markdownLocalFilePlugins';
 
 /**
  * Shared remark plugin set for every markdown surface: GFM tables/strikethrough,
- * `$...$` / `$$...$$` math, and hard line breaks. Kept as a single module-level
- * constant so all renderers stay in sync and React sees a stable reference.
+ * autolink trailing-junk cleanup, `$...$` / `$$...$$` math, and hard line breaks.
+ * Kept as a single module-level constant so all renderers stay in sync and React
+ * sees a stable reference.
  */
-export const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks];
+export const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkSanitizeAutolinkTrailing, remarkMath, remarkBreaks];
 
 /**
  * Rehype pipeline for surfaces that render raw HTML embedded in semi-trusted

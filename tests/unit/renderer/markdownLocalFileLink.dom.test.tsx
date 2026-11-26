@@ -207,4 +207,38 @@ describe('MarkdownView local file links', () => {
     expect(image).toHaveAttribute('src', 'https://example.com/generated.png');
     expect(image).toHaveAttribute('alt', '');
   });
+
+  it('trims bold markers and CJK brackets from GFM autolinks without breaking bold formatting', () => {
+    const { container } = render(
+      <MarkdownView>{'浏览器已经打开了 👉 **https://news.ycombinator.com**（Hacker News 首页）'}</MarkdownView>
+    );
+
+    const link = screen.getByRole('link', { name: 'https://news.ycombinator.com' });
+    expect(link).toHaveAttribute('href', 'https://news.ycombinator.com');
+    expect(link.closest('strong')).not.toBeNull();
+    expect(container.textContent).toBe('浏览器已经打开了 👉 https://news.ycombinator.com（Hacker News 首页）');
+  });
+
+  it('trims unmatched opening ASCII parens from GFM autolinks', () => {
+    const { container } = render(<MarkdownView>{'访问 https://news.ycombinator.com(Hacker News) 查看'}</MarkdownView>);
+
+    const link = screen.getByRole('link', { name: 'https://news.ycombinator.com' });
+    expect(link).toHaveAttribute('href', 'https://news.ycombinator.com');
+    expect(container.textContent).toContain('(Hacker News) 查看');
+  });
+
+  it('preserves balanced parentheses inside valid URLs such as Wikipedia links', () => {
+    render(<MarkdownView>{'参考 https://en.wikipedia.org/wiki/Rust_(programming_language) 文档'}</MarkdownView>);
+
+    const link = screen.getByRole('link', { name: 'https://en.wikipedia.org/wiki/Rust_(programming_language)' });
+    expect(link).toHaveAttribute('href', 'https://en.wikipedia.org/wiki/Rust_(programming_language)');
+  });
+
+  it('trims trailing CJK punctuation from GFM autolinks', () => {
+    const { container } = render(<MarkdownView>{'链接 https://example.com，测试'}</MarkdownView>);
+
+    const link = screen.getByRole('link', { name: 'https://example.com' });
+    expect(link).toHaveAttribute('href', 'https://example.com');
+    expect(container.textContent).toBe('链接 https://example.com，测试');
+  });
 });
