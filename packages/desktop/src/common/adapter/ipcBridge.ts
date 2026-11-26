@@ -1511,6 +1511,56 @@ export interface EthanTokenAccountSummary {
   quotaUsd: number;
 }
 
+export interface EthanTokenDailyBonusState {
+  claimed: boolean;
+  remainUsd: number;
+  usedUsd: number;
+  grantUsd: number;
+  expiredTime: number;
+}
+
+export interface EthanTokenLedgerSummary {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_tokens: number;
+  paid_rmb: number;
+  official_rmb: number;
+  saved_rmb: number;
+  save_pct: number;
+}
+
+export interface EthanTokenLedgerModelRow {
+  model: string;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_tokens: number;
+  paid_rmb: number;
+  official_rmb: number;
+  saved_rmb: number;
+}
+
+export interface EthanTokenLedgerLogRow {
+  id: number;
+  created_at: number;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_tokens: number;
+  paid_rmb: number;
+  official_rmb: number;
+  is_bonus: boolean;
+}
+
+export interface EthanTokenLedgerData {
+  range: 'today' | '7d' | '30d';
+  summary: EthanTokenLedgerSummary;
+  models: EthanTokenLedgerModelRow[];
+  logs: EthanTokenLedgerLogRow[];
+  error?: string;
+}
+
 export interface EthanTokenAccountState {
   loggedIn: boolean;
   baseUrl: string;
@@ -1519,6 +1569,11 @@ export interface EthanTokenAccountState {
   group?: string;
   quotaUsd?: number;
   usedUsd?: number;
+  affCode?: string;
+  affCount?: number;
+  affQuotaUsd?: number;
+  affHistoryUsd?: number;
+  dailyBonus?: EthanTokenDailyBonusState;
   providerId?: string;
   lastSyncedAt?: number;
   error?: string;
@@ -1530,6 +1585,8 @@ export const ethantoken = {
   cancelLogin: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:cancel-login'),
   getStatus: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:get-status'),
   refresh: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:refresh'),
+  checkin: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:checkin'),
+  getLedger: bridge.buildProvider<EthanTokenLedgerData, { range: 'today' | '7d' | '30d' }>('ethantoken:get-ledger'),
   logout: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:logout'),
   openWallet: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:open-wallet'),
   switchAccount: bridge.buildProvider<EthanTokenAccountState, { userId: number }>('ethantoken:switch-account'),

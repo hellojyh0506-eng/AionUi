@@ -296,7 +296,7 @@ const UpdateNotificationCard: React.FC = () => {
             <span>{t('update.releaseNotesLoading')}</span>
           ) : state.releaseNotesStatus === 'failed' ? (
             <div className='flex items-center gap-6px'>
-              <span>{t('update.releaseNotesFailed')}</span>
+              <span>{state.releasePageUrl ? t('update.releaseNotesFailed') : '更新日志暂时无法加载'}</span>
               {state.releasePageUrl && (
                 <button
                   type='button'

@@ -11,7 +11,12 @@ import path from 'node:path';
 import { app, BrowserWindow, shell } from 'electron';
 import { ipcBridge } from '@/common';
 import { httpRequest } from '@/common/adapter/httpBridge';
-import type { EthanTokenAccountState, EthanTokenAccountSummary } from '@/common/adapter/ipcBridge';
+import type {
+  EthanTokenAccountState,
+  EthanTokenAccountSummary,
+  EthanTokenDailyBonusState,
+  EthanTokenLedgerData,
+} from '@/common/adapter/ipcBridge';
 import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type IProvider } from '@/common/config/storage';
 import { IMAGE_GEN_ENV_KEYS } from '@/common/config/imageGenerationMcpEnv';
 import { CAPABILITY_PATTERNS } from '@/common/utils/modelCapabilities';
@@ -74,6 +79,11 @@ interface StoredSession {
   group: string;
   quotaUsd: number;
   usedUsd: number;
+  affCode?: string;
+  affCount?: number;
+  affQuotaUsd?: number;
+  affHistoryUsd?: number;
+  dailyBonus?: EthanTokenDailyBonusState;
   apiKey?: string;
   models?: string[];
   providerId?: string;
@@ -85,12 +95,27 @@ interface StoredAccountStore {
   accounts: StoredSession[];
 }
 
+interface DesktopDailyBonusResponse {
+  claimed?: boolean;
+  already_claimed?: boolean;
+  remain_quota?: number;
+  used_quota?: number;
+  grant_quota?: number;
+  expired_time?: number;
+  quota?: number;
+}
+
 interface NewApiUser {
   id: number;
   username: string;
   group: string;
   quota: number;
   used_quota: number;
+  aff_code?: string;
+  aff_count?: number;
+  aff_quota?: number;
+  aff_history?: number;
+  daily_bonus?: DesktopDailyBonusResponse;
 }
 
 interface NewApiToken {
@@ -156,6 +181,38 @@ function readAccountStore(): StoredAccountStore {
 
 function getSharedConfigPath(): string {
   return path.join(app.getPath('appData'), 'ethantoken', 'config.json');
+}
+
+function mapDailyBonusPayload(raw?: DesktopDailyBonusResponse | null): EthanTokenDailyBonusState | undefined {
+  if (!raw) return undefined;
+  const toUsd = (q?: number) => Math.round(((q ?? 0) / QUOTA_PER_USD) * 10000) / 10000;
+  return {
+    claimed: Boolean(raw.claimed),
+    remainUsd: toUsd(raw.remain_quota),
+    usedUsd: toUsd(raw.used_quota),
+    grantUsd: toUsd(raw.grant_quota || 100000),
+    expiredTime: Number(raw.expired_time || 0),
+  };
+}
+
+function ensureEthanTokenNoProxy(): void {
+  const bypassHosts = ['ethantoken.top', '.ethantoken.top', 'api.2005716.xyz'];
+  const merge = (current: string | undefined): string => {
+    const parts = (current || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const seen = new Set(parts.map((s) => s.toLowerCase()));
+    for (const host of bypassHosts) {
+      if (!seen.has(host)) {
+        parts.push(host);
+        seen.add(host);
+      }
+    }
+    return parts.join(',');
+  };
+  process.env.NO_PROXY = merge(process.env.NO_PROXY || process.env.no_proxy);
+  process.env.no_proxy = process.env.NO_PROXY;
 }
 
 function syncSharedEthanTokenConfig(store: StoredAccountStore): void {
@@ -224,6 +281,15 @@ function toAccountState(store: StoredAccountStore, error?: string): EthanTokenAc
       ...(error ? { error } : {}),
     };
   }
+  const publicBonus: EthanTokenDailyBonusState | undefined = active.dailyBonus
+    ? {
+        claimed: active.dailyBonus.claimed,
+        remainUsd: active.dailyBonus.remainUsd,
+        usedUsd: active.dailyBonus.usedUsd,
+        grantUsd: active.dailyBonus.grantUsd,
+        expiredTime: active.dailyBonus.expiredTime,
+      }
+    : undefined;
   return {
     loggedIn: true,
     baseUrl: active.baseUrl || ETHANTOKEN_BASE_URL,
@@ -232,6 +298,11 @@ function toAccountState(store: StoredAccountStore, error?: string): EthanTokenAc
     group: active.group,
     quotaUsd: active.quotaUsd,
     usedUsd: active.usedUsd,
+    affCode: active.affCode,
+    affCount: active.affCount,
+    affQuotaUsd: active.affQuotaUsd,
+    affHistoryUsd: active.affHistoryUsd,
+    dailyBonus: publicBonus,
     providerId: active.providerId,
     lastSyncedAt: active.lastSyncedAt,
     accounts,
@@ -543,22 +614,59 @@ async function applyAuthorizedPayload(payload: DesktopAuthCallbackPayload): Prom
   }
   const normalizedKey = rawKey.startsWith('sk-') ? rawKey : `sk-${rawKey}`;
   const models = prioritizeChatModels(Array.isArray(payload.models) ? payload.models : DEFAULT_MODELS);
-  const providerId = await upsertEthanTokenProvider(normalizedKey, models);
-  await ensureImageGenerationConfigured(providerId, normalizedKey, models);
+  const userId = Number(payload.userId);
 
+  let desktopMeta: NewApiUser | null = null;
+  try {
+    const desktopRes = await newApiFetch<NewApiUser>('/api/desktop/quota', {
+      accessToken: normalizedKey,
+      userId,
+    });
+    if (desktopRes.status !== 401 && desktopRes.json.success && desktopRes.json.data) {
+      desktopMeta = desktopRes.json.data;
+    }
+  } catch {
+    // ignore metadata fetch failure on login callback
+  }
+
+  const dailyBonus = mapDailyBonusPayload(desktopMeta?.daily_bonus);
   const session: StoredSession = {
     baseUrl: ETHANTOKEN_BASE_URL,
     accessToken: payload.accessToken,
-    userId: Number(payload.userId),
-    username: payload.username || `user_${payload.userId}`,
-    group: payload.group || '全能主力',
-    quotaUsd: typeof payload.quotaUsd === 'number' ? payload.quotaUsd : 0,
-    usedUsd: typeof payload.usedUsd === 'number' ? payload.usedUsd : 0,
+    userId,
+    username: desktopMeta?.username || payload.username || `user_${userId}`,
+    group: desktopMeta?.group || payload.group || '全能主力',
+    quotaUsd:
+      desktopMeta !== null
+        ? Math.round((desktopMeta.quota / QUOTA_PER_USD) * 10000) / 10000
+        : typeof payload.quotaUsd === 'number'
+          ? payload.quotaUsd
+          : 0,
+    usedUsd:
+      desktopMeta !== null
+        ? Math.round((desktopMeta.used_quota / QUOTA_PER_USD) * 10000) / 10000
+        : typeof payload.usedUsd === 'number'
+          ? payload.usedUsd
+          : 0,
+    affCode: desktopMeta?.aff_code,
+    affCount: desktopMeta?.aff_count,
+    affQuotaUsd:
+      typeof desktopMeta?.aff_quota === 'number'
+        ? Math.round((desktopMeta.aff_quota / QUOTA_PER_USD) * 10000) / 10000
+        : undefined,
+    affHistoryUsd:
+      typeof desktopMeta?.aff_history === 'number'
+        ? Math.round((desktopMeta.aff_history / QUOTA_PER_USD) * 10000) / 10000
+        : undefined,
+    dailyBonus,
     apiKey: normalizedKey,
     models,
-    providerId,
     lastSyncedAt: Date.now(),
   };
+
+  const providerId = await upsertEthanTokenProvider(normalizedKey, models);
+  await ensureImageGenerationConfigured(providerId, normalizedKey, models);
+  session.providerId = providerId;
   return upsertAccountInStore(session, true);
 }
 
@@ -919,7 +1027,9 @@ async function ensureEthanTokenSkillInstalled(): Promise<void> {
 }
 
 export function initEthanTokenBridge(): void {
-  syncSharedEthanTokenConfig(readAccountStore());
+  ensureEthanTokenNoProxy();
+  const initialStore = readAccountStore();
+  syncSharedEthanTokenConfig(initialStore);
   void ensureDefaultUserPresets();
   void ensureEthanTokenSkillInstalled();
 
@@ -964,16 +1074,46 @@ export function initEthanTokenBridge(): void {
       if (!apiKey || apiKey.includes('*')) {
         return toAccountState(store, '该账号缺少有效密钥，请通过浏览器重新授权');
       }
-      const providerId = await upsertEthanTokenProvider(apiKey, models);
-      await ensureImageGenerationConfigured(providerId, apiKey, models);
 
+      let desktopMeta: NewApiUser | null = null;
+      try {
+        const desktopRes = await newApiFetch<NewApiUser>('/api/desktop/quota', {
+          accessToken: apiKey,
+          userId: target.userId,
+        });
+        if (desktopRes.status !== 401 && desktopRes.json.success && desktopRes.json.data) {
+          desktopMeta = desktopRes.json.data;
+        }
+      } catch {
+        // ignore transient desktop quota fetch error when switching accounts
+      }
+
+      const nextBonus = desktopMeta?.daily_bonus ? mapDailyBonusPayload(desktopMeta.daily_bonus) : target.dailyBonus;
       const updated: StoredSession = {
         ...target,
+        username: desktopMeta?.username || target.username,
+        group: desktopMeta?.group || target.group,
+        quotaUsd: desktopMeta ? Math.round((desktopMeta.quota / QUOTA_PER_USD) * 10000) / 10000 : target.quotaUsd,
+        usedUsd: desktopMeta ? Math.round((desktopMeta.used_quota / QUOTA_PER_USD) * 10000) / 10000 : target.usedUsd,
+        affCode: desktopMeta?.aff_code || target.affCode,
+        affCount: desktopMeta?.aff_count ?? target.affCount,
+        affQuotaUsd:
+          typeof desktopMeta?.aff_quota === 'number'
+            ? Math.round((desktopMeta.aff_quota / QUOTA_PER_USD) * 10000) / 10000
+            : target.affQuotaUsd,
+        affHistoryUsd:
+          typeof desktopMeta?.aff_history === 'number'
+            ? Math.round((desktopMeta.aff_history / QUOTA_PER_USD) * 10000) / 10000
+            : target.affHistoryUsd,
+        dailyBonus: nextBonus,
         apiKey,
         models,
-        providerId,
         lastSyncedAt: Date.now(),
       };
+      const providerId = await upsertEthanTokenProvider(apiKey, models);
+      await ensureImageGenerationConfigured(providerId, apiKey, models);
+      updated.providerId = providerId;
+
       const nextStore = upsertAccountInStore(updated, true);
       void ensureEthanTokenSkillInstalled();
       return toAccountState(nextStore);
@@ -1011,26 +1151,34 @@ export function initEthanTokenBridge(): void {
         apiKey = existing.api_key;
       }
 
-      if (!validUser && apiKey && !apiKey.includes('*')) {
+      // Always consult /api/desktop/quota with permanent apiKey so aff_code and daily_bonus stay fresh
+      let desktopMeta: NewApiUser | null = null;
+      if (apiKey && !apiKey.includes('*')) {
         try {
-          const fallbackRes = await newApiFetch<NewApiUser>('/api/desktop/quota', {
+          const desktopRes = await newApiFetch<NewApiUser>('/api/desktop/quota', {
             accessToken: apiKey,
             userId: current.userId,
           });
-          if (fallbackRes.status !== 401 && fallbackRes.json.success && fallbackRes.json.data) {
-            validUser = fallbackRes.json.data;
+          if (desktopRes.status !== 401 && desktopRes.json.success && desktopRes.json.data) {
+            desktopMeta = desktopRes.json.data;
+            if (!validUser) {
+              validUser = desktopMeta;
+            }
           }
         } catch {
-          // ignore desktop quota fallback error and keep last synced snapshot if key exists
+          // ignore desktop quota error and keep last synced snapshot
         }
       }
+
+      const nextDailyBonus = desktopMeta?.daily_bonus ? mapDailyBonusPayload(desktopMeta.daily_bonus) : current.dailyBonus;
 
       let needsProviderRepair =
         !existing ||
         !existing.api_key ||
         existing.api_key.includes('*') ||
         existing.base_url !== ETHANTOKEN_API_BASE_URL ||
-        existing.model_protocols?.['claude-sonnet-5-5'] === 'anthropic';
+        existing.model_protocols?.['claude-sonnet-5-5'] === 'anthropic' ||
+        Boolean(apiKey && existing.api_key !== apiKey);
 
       let providerId = existing?.id || current.providerId;
       let models = prioritizeChatModels(current.models || existing?.models || DEFAULT_MODELS);
@@ -1044,7 +1192,7 @@ export function initEthanTokenBridge(): void {
       }
 
       if (needsProviderRepair) {
-        if (validUser && current.accessToken) {
+        if ((!apiKey || apiKey.includes('*')) && validUser && current.accessToken) {
           const auth = { accessToken: current.accessToken, cookie: current.cookie, userId: validUser.id };
           apiKey = await ensureApiKey(auth);
           models = await fetchUserModels(auth);
@@ -1059,12 +1207,24 @@ export function initEthanTokenBridge(): void {
       }
       void ensureEthanTokenSkillInstalled();
 
+      const quotaSource = desktopMeta || validUser;
       const updated: StoredSession = {
         ...current,
-        username: validUser?.username || current.username,
-        group: validUser?.group || current.group,
-        quotaUsd: validUser ? Math.round((validUser.quota / QUOTA_PER_USD) * 10000) / 10000 : current.quotaUsd,
-        usedUsd: validUser ? Math.round((validUser.used_quota / QUOTA_PER_USD) * 10000) / 10000 : current.usedUsd,
+        username: quotaSource?.username || current.username,
+        group: quotaSource?.group || current.group,
+        quotaUsd: quotaSource ? Math.round((quotaSource.quota / QUOTA_PER_USD) * 10000) / 10000 : current.quotaUsd,
+        usedUsd: quotaSource ? Math.round((quotaSource.used_quota / QUOTA_PER_USD) * 10000) / 10000 : current.usedUsd,
+        affCode: quotaSource?.aff_code || current.affCode,
+        affCount: quotaSource?.aff_count ?? current.affCount,
+        affQuotaUsd:
+          typeof quotaSource?.aff_quota === 'number'
+            ? Math.round((quotaSource.aff_quota / QUOTA_PER_USD) * 10000) / 10000
+            : current.affQuotaUsd,
+        affHistoryUsd:
+          typeof quotaSource?.aff_history === 'number'
+            ? Math.round((quotaSource.aff_history / QUOTA_PER_USD) * 10000) / 10000
+            : current.affHistoryUsd,
+        dailyBonus: nextDailyBonus,
         apiKey,
         models,
         providerId,
@@ -1079,6 +1239,76 @@ export function initEthanTokenBridge(): void {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return toAccountState(readAccountStore(), msg);
+    }
+  });
+
+  ipcBridge.ethantoken.checkin.provider(async () => {
+    const store = readAccountStore();
+    const current = getActiveSession(store);
+    if (!current || !current.apiKey || current.apiKey.includes('*')) {
+      return toAccountState(store, '请先登录后再签到');
+    }
+    try {
+      const res = await newApiFetch<DesktopDailyBonusResponse>('/api/desktop/checkin', {
+        method: 'POST',
+        accessToken: current.apiKey,
+        userId: current.userId,
+      });
+      if (!res.json.success || !res.json.data) {
+        return toAccountState(readAccountStore(), res.json.message || '签到失败');
+      }
+      const nextBonus = mapDailyBonusPayload(res.json.data);
+      const updatedQuotaUsd =
+        typeof res.json.data.quota === 'number'
+          ? Math.round((res.json.data.quota / QUOTA_PER_USD) * 10000) / 10000
+          : current.quotaUsd;
+      const updated: StoredSession = {
+        ...current,
+        quotaUsd: updatedQuotaUsd,
+        dailyBonus: nextBonus,
+        lastSyncedAt: Date.now(),
+      };
+      const nextStore = upsertAccountInStore(updated, true);
+      return toAccountState(nextStore);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return toAccountState(readAccountStore(), msg);
+    }
+  });
+
+  ipcBridge.ethantoken.getLedger.provider(async ({ range }) => {
+    const safeRange = range === 'today' || range === '7d' || range === '30d' ? range : '30d';
+    const emptyResult: EthanTokenLedgerData = {
+      range: safeRange,
+      summary: {
+        calls: 0,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        cache_tokens: 0,
+        paid_rmb: 0,
+        official_rmb: 0,
+        saved_rmb: 0,
+        save_pct: 0,
+      },
+      models: [],
+      logs: [],
+    };
+    const store = readAccountStore();
+    const current = getActiveSession(store);
+    if (!current || !current.apiKey || current.apiKey.includes('*')) {
+      return { ...emptyResult, error: '请先登录 EthanToken 账号' };
+    }
+    try {
+      const res = await newApiFetch<EthanTokenLedgerData>(`/api/desktop/ledger?range=${safeRange}`, {
+        accessToken: current.apiKey,
+        userId: current.userId,
+      });
+      if (!res.json.success || !res.json.data) {
+        return { ...emptyResult, error: res.json.message || '获取用量与账单失败' };
+      }
+      return res.json.data;
+    } catch (err) {
+      return { ...emptyResult, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
