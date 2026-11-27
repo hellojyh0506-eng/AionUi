@@ -1,7 +1,7 @@
 import type { WebHostOptions, WebHostHandle } from './types.js';
 
-export type { AppMetadata, BackendBinaryResolver, WebHostOptions, WebHostHandle } from './types.js';
-export { startStaticServer, stopStaticServer } from './static-server.js';
+export type { AppMetadata, BackendBinaryResolver, CustomApiHandler, WebHostOptions, WebHostHandle } from './types.js';
+export { pickLanIP, startStaticServer, stopStaticServer } from './static-server.js';
 export type { StaticServerOptions, StaticServerHandle } from './static-server.js';
 
 // Backend launcher exports (M4)
@@ -56,6 +56,7 @@ export async function startWebHost(opts: WebHostOptions): Promise<WebHostHandle>
       backendPort: backendHandle.port,
       port: opts.port,
       allowRemote: opts.allowRemote ?? false,
+      customApiHandler: opts.customApiHandler,
     });
   } catch (err) {
     // If static-server fails, clean up backend

@@ -13,6 +13,7 @@ import { initNotificationBridge } from './notificationBridge';
 import { initWebuiBridge } from './webuiBridge';
 import { initThemeBridge } from './themeBridge';
 import { initEthanTokenBridge } from './ethantokenBridge';
+import { initEcosystemBridge } from './ecosystemBridge';
 
 export type BridgeDependencies = Record<string, never>;
 
@@ -26,11 +27,14 @@ export function initAllBridges(_deps: BridgeDependencies = {}): void {
   initWebuiBridge();
   initThemeBridge();
   initEthanTokenBridge();
+  initEcosystemBridge();
 }
 
 export {
   initApplicationBridge,
   initDialogBridge,
+  initEcosystemBridge,
+  initEthanTokenBridge,
   initNotificationBridge,
   initSystemSettingsBridge,
   initThemeBridge,

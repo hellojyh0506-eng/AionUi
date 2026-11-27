@@ -832,9 +832,15 @@ const handleAppReady = async (): Promise<void> => {
         });
         const { getDataPath } = await import('./process/utils/utils');
         const { getSystemDir } = await import('./process/utils/initStorage');
+        const dataPath = getDataPath();
+        const memoryDir = path.join(dataPath, 'memory');
+        fs.mkdirSync(memoryDir, { recursive: true });
+        if (!process.env.AIONRS_MEMORY_DIR) {
+          process.env.AIONRS_MEMORY_DIR = memoryDir;
+        }
         const sysDir = getSystemDir();
         return backendManager.start(
-          getDataPath(),
+          dataPath,
           sysDir.logDir,
           {
             cacheDir: sysDir.cacheDir,

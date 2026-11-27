@@ -6,7 +6,7 @@ import { Delete, Help, Lightning, Puzzle } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import useSWR from 'swr';
+import useSWR, { mutate as swrMutate } from 'swr';
 import SkillUsedByStack, { getAssistantsUsingSkill } from './SkillUsedByStack';
 import SettingsPageWrapper from '../components/SettingsPageWrapper';
 import SettingsPageHeader from '../components/SettingsPageHeader';
@@ -159,8 +159,11 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
   // Batch management (Custom tab only): multi-select skills for bulk deletion.
   const [batchMode, setBatchMode] = useState(false);
   const [selectedSkillNames, setSelectedSkillNames] = useState<Set<string>>(new Set());
+  const [mountingSkill, setMountingSkill] = useState<string | null>(null);
   // Assistant catalog for the "used by" avatar stacks on skill cards.
-  const { data: assistantCatalog } = useSWR<Assistant[]>('assistants.list', () => ipcBridge.assistants.list.invoke());
+  const { data: assistantCatalog, mutate: mutateAssistants } = useSWR<Assistant[]>('assistants.list', () =>
+    ipcBridge.assistants.list.invoke()
+  );
 
   const openSkillDetail = useCallback(
     (skillName: string) => {
@@ -220,7 +223,13 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
 
   useEffect(() => {
     void fetchData();
-  }, [fetchData]);
+    const handleEcosystemUpdated = () => {
+      void fetchData();
+      void mutateAssistants();
+    };
+    window.addEventListener('ethantoken:ecosystem-updated', handleEcosystemUpdated);
+    return () => window.removeEventListener('ethantoken:ecosystem-updated', handleEcosystemUpdated);
+  }, [fetchData, mutateAssistants]);
 
   // When deep-linked to a specific skill, open the tab that actually contains it
   // so the highlight/scroll below can find its rendered card.
@@ -258,10 +267,37 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
     void navigate('/settings/skills');
   }, [navigate]);
 
+  const handleMountSkillToAllAssistants = useCallback(
+    async (skillName: string) => {
+      setMountingSkill(skillName);
+      try {
+        const res = await ipcBridge.ecosystem.attachToAllAssistants.invoke({ skillNames: [skillName] });
+        await Promise.all([mutateAssistants(), swrMutate('agents.boundAssistants.list')]);
+        Message.success(
+          res.updatedAssistants > 0
+            ? `已将「${skillName}」挂载到 ${res.updatedAssistants} 个助手`
+            : `「${skillName}」已挂载到全部助手`
+        );
+      } catch (error) {
+        console.error('Failed to mount skill to assistants:', error);
+        Message.error('挂载到全部助手失败');
+      } finally {
+        setMountingSkill(null);
+      }
+    },
+    [mutateAssistants]
+  );
+
   const handleImport = async (skillPath: string) => {
     try {
       const result = await ipcBridge.fs.importSkills.invoke({ skill_path: skillPath });
       const notice = buildSkillImportNotice(result, t);
+      if (notice.importedNames.length > 0) {
+        await ipcBridge.ecosystem.attachToAllAssistants
+          .invoke({ skillNames: notice.importedNames })
+          .catch((): undefined => undefined);
+        await Promise.all([mutateAssistants(), swrMutate('agents.boundAssistants.list')]);
+      }
       if (notice.type === 'error') {
         Message.error(notice.message);
       } else if (notice.type === 'warning') {
@@ -832,83 +868,101 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
               {t('settings.skillsHub.noSearchResults', { defaultValue: 'No matching skills.' })}
             </div>
           )}
-          {filteredSkills.map((skill) => (
-            <div
-              key={skill.name}
-              data-testid={`my-skill-card-${normalizeTestId(skill.name)}`}
-              ref={(el) => {
-                skillRefs.current[skill.name] = el;
-              }}
-              onClick={batchMode ? () => toggleSkillSelected(skill.name) : () => openSkillDetail(skill.name)}
-              className={`group flex flex-col sm:flex-row gap-16px p-14px border rd-12px transition-all duration-200 cursor-pointer ${highlightedSkill === skill.name ? 'border-primary-5 bg-primary-1' : selectedSkillNames.has(skill.name) && batchMode ? 'border-transparent bg-[rgba(var(--primary-6),0.06)]' : 'border-transparent bg-base hover:border-border-2'}`}
-            >
-              {batchMode && (
-                <div className='shrink-0 flex items-center sm:self-center'>
-                  <Checkbox
-                    data-testid={`checkbox-skill-${normalizeTestId(skill.name)}`}
-                    checked={selectedSkillNames.has(skill.name)}
-                    onChange={() => toggleSkillSelected(skill.name)}
-                    onClick={(e) => e.stopPropagation()}
-                  />
+          {filteredSkills.map((skill) => {
+            const usedBy = getAssistantsUsingSkill(skill.name, assistantCatalog ?? []);
+            return (
+              <div
+                key={skill.name}
+                data-testid={`my-skill-card-${normalizeTestId(skill.name)}`}
+                ref={(el) => {
+                  skillRefs.current[skill.name] = el;
+                }}
+                onClick={batchMode ? () => toggleSkillSelected(skill.name) : () => openSkillDetail(skill.name)}
+                className={`group flex flex-col sm:flex-row gap-16px p-14px border rd-12px transition-all duration-200 cursor-pointer ${highlightedSkill === skill.name ? 'border-primary-5 bg-primary-1' : selectedSkillNames.has(skill.name) && batchMode ? 'border-transparent bg-[rgba(var(--primary-6),0.06)]' : 'border-transparent bg-base hover:border-border-2'}`}
+              >
+                {batchMode && (
+                  <div className='shrink-0 flex items-center sm:self-center'>
+                    <Checkbox
+                      data-testid={`checkbox-skill-${normalizeTestId(skill.name)}`}
+                      checked={selectedSkillNames.has(skill.name)}
+                      onChange={() => toggleSkillSelected(skill.name)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </div>
+                )}
+                <div className='shrink-0 flex items-start sm:mt-2px'>
+                  <div
+                    className={`w-40px h-40px rd-10px flex items-center justify-center font-bold text-16px shadow-sm text-transform-uppercase ${getAvatarColorClass(skill.name)}`}
+                  >
+                    {skill.name.charAt(0).toUpperCase()}
+                  </div>
                 </div>
-              )}
-              <div className='shrink-0 flex items-start sm:mt-2px'>
-                <div
-                  className={`w-40px h-40px rd-10px flex items-center justify-center font-bold text-16px shadow-sm text-transform-uppercase ${getAvatarColorClass(skill.name)}`}
-                >
-                  {skill.name.charAt(0).toUpperCase()}
-                </div>
-              </div>
 
-              <div className='flex-1 min-w-0 flex flex-col justify-center gap-4px'>
-                <h3 className='text-14px font-semibold text-t-primary/90 truncate m-0'>{skill.name}</h3>
-                {skill.description && (
-                  <p className='text-13px text-t-secondary leading-relaxed line-clamp-2 m-0' title={skill.description}>
-                    {skill.description}
-                  </p>
+                <div className='flex-1 min-w-0 flex flex-col justify-center gap-4px'>
+                  <h3 className='text-14px font-semibold text-t-primary/90 truncate m-0'>{skill.name}</h3>
+                  {skill.description && (
+                    <p className='text-13px text-t-secondary leading-relaxed line-clamp-2 m-0' title={skill.description}>
+                      {skill.description}
+                    </p>
+                  )}
+                </div>
+
+                {!batchMode && (
+                  <div className='shrink-0 sm:self-center flex items-center justify-end gap-10px mt-12px sm:mt-0 ps-4px'>
+                    {usedBy.length === 0 && (assistantCatalog?.length ?? 0) > 0 ? (
+                      <Button
+                        size='mini'
+                        type='outline'
+                        loading={mountingSkill === skill.name}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleMountSkillToAllAssistants(skill.name);
+                        }}
+                        className='!h-24px !px-10px !text-11.5px !rd-999px'
+                      >
+                        挂载到全部助手
+                      </Button>
+                    ) : (
+                      <SkillUsedByStack assistants={usedBy} />
+                    )}
+                    <button
+                      data-testid={`btn-delete-${normalizeTestId(skill.name)}`}
+                      className='p-8px hover:bg-danger-1 hover:text-danger-6 text-t-tertiary rd-6px outline-none flex items-center justify-center border border-transparent cursor-pointer transition-colors shadow-sm bg-base sm:bg-transparent sm:shadow-none opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity'
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        Modal.confirm({
+                          title: t('settings.skillsHub.deleteConfirmTitle', { defaultValue: 'Delete Skill' }),
+                          content: (
+                            <div>
+                              <div>
+                                {t('settings.skillsHub.deleteConfirmContent', {
+                                  name: skill.name,
+                                  defaultValue: `Are you sure you want to delete "${skill.name}"?`,
+                                })}
+                              </div>
+                              <div className='text-12px text-t-tertiary mt-8px'>
+                                {t('settings.skillsHub.deleteAffectsNewOnlyHint', {
+                                  defaultValue:
+                                    'Deleting only affects new conversations. Skills already selected in existing conversations keep working.',
+                                })}
+                              </div>
+                            </div>
+                          ),
+                          okButtonProps: { status: 'danger' },
+                          okText: t('common.delete', { defaultValue: 'Delete' }),
+                          onOk: () => void handleDelete(skill.name),
+                          wrapClassName: 'modal-delete-skill',
+                        });
+                      }}
+                      title={t('common.delete', { defaultValue: 'Delete' })}
+                    >
+                      <Delete size={16} />
+                    </button>
+                  </div>
                 )}
               </div>
-
-              {!batchMode && (
-                <div className='shrink-0 sm:self-center flex items-center justify-end gap-10px mt-12px sm:mt-0 ps-4px'>
-                  <SkillUsedByStack assistants={getAssistantsUsingSkill(skill.name, assistantCatalog ?? [])} />
-                  <button
-                    data-testid={`btn-delete-${normalizeTestId(skill.name)}`}
-                    className='p-8px hover:bg-danger-1 hover:text-danger-6 text-t-tertiary rd-6px outline-none flex items-center justify-center border border-transparent cursor-pointer transition-colors shadow-sm bg-base sm:bg-transparent sm:shadow-none opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity'
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      Modal.confirm({
-                        title: t('settings.skillsHub.deleteConfirmTitle', { defaultValue: 'Delete Skill' }),
-                        content: (
-                          <div>
-                            <div>
-                              {t('settings.skillsHub.deleteConfirmContent', {
-                                name: skill.name,
-                                defaultValue: `Are you sure you want to delete "${skill.name}"?`,
-                              })}
-                            </div>
-                            <div className='text-12px text-t-tertiary mt-8px'>
-                              {t('settings.skillsHub.deleteAffectsNewOnlyHint', {
-                                defaultValue:
-                                  'Deleting only affects new conversations. Skills already selected in existing conversations keep working.',
-                              })}
-                            </div>
-                          </div>
-                        ),
-                        okButtonProps: { status: 'danger' },
-                        okText: t('common.delete', { defaultValue: 'Delete' }),
-                        onOk: () => void handleDelete(skill.name),
-                        wrapClassName: 'modal-delete-skill',
-                      });
-                    }}
-                    title={t('common.delete', { defaultValue: 'Delete' })}
-                  >
-                    <Delete size={16} />
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className='text-center text-t-secondary text-13px py-40px bg-fill-1 rd-12px border border-border-2 border-dashed'>
@@ -993,6 +1047,22 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
           <>
             {/* Mobile: the actions row is too crowded — drop the search box entirely. */}
             {!isMobile && searchBox('input-search-my-skills')}
+            <Button
+              type='text'
+              size='small'
+              className='!text-t-secondary hover:!text-t-primary !px-8px'
+              onClick={() => void navigate('/marketplace?tab=skills')}
+            >
+              插件市场
+            </Button>
+            <Button
+              type='text'
+              size='small'
+              className='!text-t-secondary hover:!text-t-primary !px-8px'
+              onClick={() => window.dispatchEvent(new CustomEvent('ethantoken:open-migration-modal'))}
+            >
+              一键迁移
+            </Button>
             <Button
               type='text'
               size='small'

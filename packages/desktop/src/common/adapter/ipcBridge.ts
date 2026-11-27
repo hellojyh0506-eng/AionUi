@@ -105,6 +105,7 @@ import {
   fromApiPaginatedConversations,
   toApiModelOptional,
 } from './apiModelMapper';
+import { registerDesktopWebuiHandler } from './desktopWebuiRegistry';
 import {
   httpDelete,
   httpGet,
@@ -1580,16 +1581,89 @@ export interface EthanTokenAccountState {
   accounts?: EthanTokenAccountSummary[];
 }
 
+function isBrowserWebuiRuntime(): boolean {
+  return typeof window !== 'undefined' && !(window as Window & { electronAPI?: unknown }).electronAPI;
+}
+
+function desktopHybridProvider<Data, Params = undefined>(channel: string) {
+  const ipc = bridge.buildProvider<Data, Params>(channel);
+  return {
+    provider(handler: Parameters<typeof ipc.provider>[0]): () => void {
+      registerDesktopWebuiHandler(channel, (params) =>
+        Promise.resolve((handler as (p: Params) => Promise<Data> | Data)(params as Params))
+      );
+      return ipc.provider(handler);
+    },
+    invoke: ((params?: Params) => {
+      if (isBrowserWebuiRuntime()) {
+        return httpRequest<Data>(
+          'POST',
+          `/api/desktop-bridge/${encodeURIComponent(channel)}`,
+          params === undefined ? {} : params
+        );
+      }
+      return (ipc.invoke as (p?: Params) => Promise<Data>)(params);
+    }) as typeof ipc.invoke,
+  };
+}
+
 export const ethantoken = {
   login: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:login'),
   cancelLogin: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:cancel-login'),
-  getStatus: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:get-status'),
-  refresh: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:refresh'),
-  checkin: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:checkin'),
-  getLedger: bridge.buildProvider<EthanTokenLedgerData, { range: 'today' | '7d' | '30d' }>('ethantoken:get-ledger'),
+  getStatus: desktopHybridProvider<EthanTokenAccountState, void>('ethantoken:get-status'),
+  refresh: desktopHybridProvider<EthanTokenAccountState, void>('ethantoken:refresh'),
+  checkin: desktopHybridProvider<EthanTokenAccountState, void>('ethantoken:checkin'),
+  getLedger: desktopHybridProvider<EthanTokenLedgerData, { range: 'today' | '7d' | '30d' }>('ethantoken:get-ledger'),
   logout: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:logout'),
   openWallet: bridge.buildProvider<EthanTokenAccountState, void>('ethantoken:open-wallet'),
-  switchAccount: bridge.buildProvider<EthanTokenAccountState, { userId: number }>('ethantoken:switch-account'),
+  switchAccount: desktopHybridProvider<EthanTokenAccountState, { userId: number }>('ethantoken:switch-account'),
+};
+
+export const ecosystem = {
+  scanClients: desktopHybridProvider<import('@/common/types/ecosystem').ClientScanReport, void>(
+    'ecosystem:scan-clients'
+  ),
+  importScannedItems: desktopHybridProvider<
+    import('@/common/types/ecosystem').MigrationImportResult,
+    import('@/common/types/ecosystem').MigrationImportRequest
+  >('ecosystem:import-scanned'),
+  getGlobalMemory: desktopHybridProvider<import('@/common/types/ecosystem').GlobalMemoryState, void>(
+    'ecosystem:get-global-memory'
+  ),
+  saveGlobalMemory: desktopHybridProvider<
+    import('@/common/types/ecosystem').GlobalMemoryState & { assistantSynced: boolean },
+    import('@/common/types/ecosystem').SaveGlobalMemoryRequest
+  >('ecosystem:save-global-memory'),
+  searchMcpMarketplace: desktopHybridProvider<
+    import('@/common/types/ecosystem').MarketplaceSearchMcpResult,
+    { query?: string }
+  >('ecosystem:search-mcp-marketplace'),
+  installMcpFromMarketplace: desktopHybridProvider<
+    import('@/common/types/ecosystem').InstallMcpResult,
+    import('@/common/types/ecosystem').InstallMcpRequest
+  >('ecosystem:install-mcp-marketplace'),
+  searchSkillsMarketplace: desktopHybridProvider<
+    import('@/common/types/ecosystem').MarketplaceSearchSkillsResult,
+    { query?: string }
+  >('ecosystem:search-skills-marketplace'),
+  installSkillFromMarketplace: desktopHybridProvider<
+    import('@/common/types/ecosystem').InstallSkillResult,
+    import('@/common/types/ecosystem').InstallSkillRequest
+  >('ecosystem:install-skill-marketplace'),
+  syncMarketplace: desktopHybridProvider<
+    import('@/common/types/ecosystem').MarketplaceSyncResult,
+    { force?: boolean } | void
+  >('ecosystem:sync-marketplace'),
+  checkUpdates: desktopHybridProvider<import('@/common/types/ecosystem').MarketplaceUpdateCheckResult, void>(
+    'ecosystem:check-updates'
+  ),
+  updateAllPlugins: desktopHybridProvider<import('@/common/types/ecosystem').MarketplaceUpdateAllResult, void>(
+    'ecosystem:update-all-plugins'
+  ),
+  attachToAllAssistants: desktopHybridProvider<
+    import('@/common/types/ecosystem').AttachResourcesResult,
+    import('@/common/types/ecosystem').AttachResourcesRequest
+  >('ecosystem:attach-to-all-assistants'),
 };
 
 // ---------------------------------------------------------------------------

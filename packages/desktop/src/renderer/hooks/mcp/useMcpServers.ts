@@ -13,17 +13,22 @@ export const useMcpServers = () => {
   const [isMcpServersLoading, setIsMcpServersLoading] = useState(true);
 
   useEffect(() => {
-    void ensureBackendMcpCatalog()
-      .then(({ allServers }) => {
-        setMcpServers(allServers);
-      })
-      .catch((error) => {
-        console.error('[useMcpServers] Failed to load MCP catalog:', error);
-        setMcpServers([]);
-      })
-      .finally(() => {
-        setIsMcpServersLoading(false);
-      });
+    const reloadCatalog = () => {
+      void ensureBackendMcpCatalog()
+        .then(({ allServers }) => {
+          setMcpServers(allServers);
+        })
+        .catch((error) => {
+          console.error('[useMcpServers] Failed to load MCP catalog:', error);
+          setMcpServers([]);
+        })
+        .finally(() => {
+          setIsMcpServersLoading(false);
+        });
+    };
+
+    reloadCatalog();
+    window.addEventListener('ethantoken:ecosystem-updated', reloadCatalog);
 
     void ipcBridge.extensions.getMcpServers
       .invoke()
@@ -50,6 +55,10 @@ export const useMcpServers = () => {
         console.error('[useMcpServers] Failed to load extension MCP servers:', error);
         setExtensionMcpServers([]);
       });
+
+    return () => {
+      window.removeEventListener('ethantoken:ecosystem-updated', reloadCatalog);
+    };
   }, []);
 
   const saveMcpServers = useCallback((serversOrUpdater: IMcpServer[] | ((prev: IMcpServer[]) => IMcpServer[])) => {

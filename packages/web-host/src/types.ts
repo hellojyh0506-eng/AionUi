@@ -1,5 +1,9 @@
 // Core types for @aionui/web-host (M3 interface contract, locked for M4-M8)
 
+import type { IncomingMessage, ServerResponse } from 'node:http';
+
+export type CustomApiHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
+
 /**
  * App metadata injected by host environment (Electron or Node)
  */
@@ -38,6 +42,7 @@ export type WebHostOptions = {
   dataDir?: string;
   logDir?: string;
   dirs?: BackendSystemDirs;
+  customApiHandler?: CustomApiHandler;
   backend: { kind: 'ownBackend'; resolveBackend: BackendBinaryResolver } | { kind: 'useExistingBackend'; port: number };
 };
 

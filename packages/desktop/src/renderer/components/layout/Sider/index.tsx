@@ -7,7 +7,7 @@ import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { blurActiveElement } from '@renderer/utils/ui/focus';
 import { useThemeContext } from '@renderer/hooks/context/ThemeContext';
-import { SiderToolbar, SiderSearchEntry, SiderScheduledEntry, SiderAssistantEntry } from './SiderNav';
+import { SiderToolbar, SiderSearchEntry, SiderScheduledEntry, SiderAssistantEntry, SiderMarketplaceEntry } from './SiderNav';
 import SiderFooter from './SiderFooter';
 import TeamSiderSection from './TeamSiderSection';
 import siderStyles from './Sider.module.css';
@@ -109,6 +109,19 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     }
   };
 
+  const handleMarketplaceClick = () => {
+    cleanupSiderTooltips();
+    blurActiveElement();
+    closePreview();
+    setIsBatchMode(false);
+    Promise.resolve(navigate('/marketplace')).catch((error) => {
+      console.error('Navigation failed:', error);
+    });
+    if (onSessionClick) {
+      onSessionClick();
+    }
+  };
+
   const handleQuickThemeToggle = () => {
     void setTheme(theme === 'dark' ? 'light' : 'dark');
   };
@@ -200,13 +213,21 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 onSessionClick={onSessionClick}
               />
             )}
-            {/* Assistant nav entry - fixed above Scheduled */}
+            {/* Assistant nav entry - fixed above Marketplace */}
             <SiderAssistantEntry
               isMobile={isMobile}
               isActive={pathname.startsWith('/assistants')}
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
               onClick={handleAssistantClick}
+            />
+            {/* Plugin marketplace entry - above Scheduled */}
+            <SiderMarketplaceEntry
+              isMobile={isMobile}
+              isActive={pathname.startsWith('/marketplace')}
+              collapsed={collapsed}
+              siderTooltipProps={siderTooltipProps}
+              onClick={handleMarketplaceClick}
             />
             {/* Scheduled tasks nav entry - fixed above scroll */}
             <SiderScheduledEntry
@@ -253,6 +274,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
         siderTooltipProps={siderTooltipProps}
         onSettingsClick={handleSettingsClick}
         onThemeToggle={handleQuickThemeToggle}
+        onNavigate={onSessionClick}
         showLogout={showLogout}
         onLogoutClick={handleLogout}
       />

@@ -1,6 +1,8 @@
 import { useCallback } from 'react';
 import { Message } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
+import { mutate as swrMutate } from 'swr';
+import { ipcBridge } from '@/common';
 import { mcpService } from '@/common/adapter/ipcBridge';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import type { IMcpServer } from '@/common/config/storage';
@@ -53,6 +55,15 @@ export const useMcpServerCRUD = (
 
         const nextServer = mergeServerState(persisted, serverData);
         await saveMcpServers((prevServers) => replaceUserServer(prevServers, nextServer));
+        if (nextServer.enabled) {
+          void ipcBridge.ecosystem.attachToAllAssistants
+            .invoke({ mcpServerIds: [nextServer.id] })
+            .then(() => {
+              void swrMutate('assistants.list');
+              void swrMutate('agents.boundAssistants.list');
+            })
+            .catch((): undefined => undefined);
+        }
         return nextServer;
       } catch (error) {
         Message.error(getMcpRequestErrorMessage(error, t('settings.mcpImportFailed')));
@@ -92,6 +103,17 @@ export const useMcpServerCRUD = (
 
           return nextServers;
         });
+
+        const enabledIds = finalServers.filter((s) => s.enabled).map((s) => s.id);
+        if (enabledIds.length > 0) {
+          void ipcBridge.ecosystem.attachToAllAssistants
+            .invoke({ mcpServerIds: enabledIds })
+            .then(() => {
+              void swrMutate('assistants.list');
+              void swrMutate('agents.boundAssistants.list');
+            })
+            .catch((): undefined => undefined);
+        }
 
         return finalServers;
       } catch (error) {

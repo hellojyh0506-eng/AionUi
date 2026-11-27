@@ -4,18 +4,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Message, Modal, Popover, Spin, Tooltip } from '@arco-design/web-react';
 import { Down, MoreOne, Refresh, User } from '@icon-park/react';
+import { useNavigate } from 'react-router-dom';
 import { mutate } from 'swr';
 import { ipcBridge } from '@/common';
 import type { EthanTokenAccountState, EthanTokenLedgerData } from '@/common/adapter/ipcBridge';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
+import { isElectronDesktop, openExternalUrl } from '@/renderer/utils/platform';
 import wechatQrImg from '@renderer/assets/ethantoken-wechat-qr.png';
+import MigrationModal from '@/renderer/components/ecosystem/MigrationModal';
 
 interface EthanTokenAccountBarProps {
   collapsed?: boolean;
   siderTooltipProps: SiderTooltipProps;
+  onNavigate?: () => void;
 }
 
 interface CommunityConfig {
@@ -29,6 +33,23 @@ interface CommunityConfig {
 
 type LedgerRange = 'today' | '7d' | '30d';
 type LedgerTab = 'models' | 'logs';
+type LedgerBasis = 'equal' | 'fx';
+
+const MIGRATION_ONBOARDING_KEY = 'ethantoken:migration-onboarding-v1';
+const USD_TO_RMB_FX = 6.7;
+const DOMESTIC_RMB_MODEL_KEYWORDS = ['deepseek', 'glm', 'qwen', 'minimax'];
+
+const isDomesticRmbModel = (model: string): boolean => {
+  const lower = model.trim().toLowerCase();
+  return DOMESTIC_RMB_MODEL_KEYWORDS.some((kw) => lower.includes(kw));
+};
+
+const computeEffectiveOfficialRmb = (rawOfficialRmb: number, model: string, basis: LedgerBasis): number => {
+  if (basis === 'fx' || isDomesticRmbModel(model)) {
+    return rawOfficialRmb;
+  }
+  return rawOfficialRmb / USD_TO_RMB_FX;
+};
 
 const DEFAULT_COMMUNITY_CONFIG: CommunityConfig = {
   wechatGroupName: '微信用户群',
@@ -138,7 +159,31 @@ const CloseMiniIcon = () => (
   </svg>
 );
 
-const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed = false, siderTooltipProps }) => {
+const MigrateIcon = () => (
+  <svg width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.65' strokeLinecap='round' strokeLinejoin='round'>
+    <path d='M12 3v12' />
+    <path d='m7 10 5 5 5-5' />
+    <path d='M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2' />
+  </svg>
+);
+
+const MarketplaceIcon = () => (
+  <svg width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.65' strokeLinecap='round' strokeLinejoin='round'>
+    <rect x='3' y='3' width='8' height='8' rx='1.5' />
+    <rect x='13' y='3' width='8' height='8' rx='1.5' />
+    <rect x='3' y='13' width='8' height='8' rx='1.5' />
+    <path d='M17 13v8' />
+    <path d='M13 17h8' />
+  </svg>
+);
+
+const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({
+  collapsed = false,
+  siderTooltipProps,
+  onNavigate,
+}) => {
+  const navigate = useNavigate();
+  const isDesktop = isElectronDesktop();
   const [account, setAccount] = useState<EthanTokenAccountState>({
     loggedIn: false,
     baseUrl: 'https://ethantoken.top',
@@ -155,11 +200,14 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
   const [ledgerModalOpen, setLedgerModalOpen] = useState(false);
   const [ledgerRange, setLedgerRange] = useState<LedgerRange>('30d');
   const [ledgerTab, setLedgerTab] = useState<LedgerTab>('models');
+  const [ledgerBasis, setLedgerBasis] = useState<LedgerBasis>('equal');
   const [ledgerData, setLedgerData] = useState<EthanTokenLedgerData | null>(null);
   const [ledgerLoading, setLedgerLoading] = useState(false);
 
   const [inviteModalOpen, setInviteModalOpen] = useState(false);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [migrationModalOpen, setMigrationModalOpen] = useState(false);
+  const [migrationOnboarding, setMigrationOnboarding] = useState(false);
   const [community, setCommunity] = useState<CommunityConfig>(DEFAULT_COMMUNITY_CONFIG);
   const loginSeqRef = useRef(0);
 
@@ -191,10 +239,55 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
   }, [loadStatus]);
 
   useEffect(() => {
+    if (!isDesktop) return;
+    let cancelled = false;
+    try {
+      if (window.localStorage.getItem(MIGRATION_ONBOARDING_KEY)) {
+        return;
+      }
+      void ipcBridge.ecosystem.scanClients
+        .invoke()
+        .then((report) => {
+          if (cancelled) return;
+          const totalItems = report.skills.length + report.mcps.length + report.rules.length;
+          if (totalItems > 0 && report.clients.some((c) => c.detected)) {
+            window.localStorage.setItem(MIGRATION_ONBOARDING_KEY, 'shown');
+            setMigrationOnboarding(true);
+            setMigrationModalOpen(true);
+          } else {
+            window.localStorage.setItem(MIGRATION_ONBOARDING_KEY, 'empty');
+          }
+        })
+        .catch((): undefined => undefined);
+    } catch {
+      // Ignore storage access restrictions.
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [isDesktop]);
+
+  useEffect(() => {
     const handleOpenCommunity = () => setGroupModalOpen(true);
+    const handleOpenMigration = () => {
+      setMigrationOnboarding(false);
+      setMigrationModalOpen(true);
+    };
+    const handleOpenMarketplace = (event: Event) => {
+      const custom = event as CustomEvent<{ tab?: 'mcp' | 'skills' }>;
+      const targetTab = custom.detail?.tab === 'skills' ? 'skills' : 'mcp';
+      void navigate(`/marketplace?tab=${targetTab}`);
+      onNavigate?.();
+    };
     window.addEventListener('ethantoken:open-community-modal', handleOpenCommunity);
-    return () => window.removeEventListener('ethantoken:open-community-modal', handleOpenCommunity);
-  }, []);
+    window.addEventListener('ethantoken:open-migration-modal', handleOpenMigration);
+    window.addEventListener('ethantoken:open-marketplace-modal', handleOpenMarketplace);
+    return () => {
+      window.removeEventListener('ethantoken:open-community-modal', handleOpenCommunity);
+      window.removeEventListener('ethantoken:open-migration-modal', handleOpenMigration);
+      window.removeEventListener('ethantoken:open-marketplace-modal', handleOpenMarketplace);
+    };
+  }, [navigate, onNavigate]);
 
   useEffect(() => {
     if (!ledgerModalOpen || !account.loggedIn) return;
@@ -277,6 +370,28 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
   }, [account.loggedIn]);
 
   const handleLogin = async () => {
+    if (!isDesktop) {
+      setPopoverOpen(false);
+      setLoading(true);
+      try {
+        const st = await ipcBridge.ethantoken.getStatus.invoke();
+        if (st.loggedIn) {
+          const fresh = await ipcBridge.ethantoken.refresh.invoke().catch((): EthanTokenAccountState => st);
+          setAccount(fresh);
+          await syncFrontendCaches();
+          Message.success(`已同步账户：${fresh.username}`);
+        } else {
+          setAccount(st);
+          Message.info('请在电脑端 EthanToken 客户端完成授权登录，手机端会自动同步余额与模型');
+        }
+      } catch {
+        Message.warning('暂未检测到电脑端授权状态，请稍后重试');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     const seq = ++loginSeqRef.current;
     const wasLoggedIn = account.loggedIn;
     setPopoverOpen(false);
@@ -385,7 +500,12 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
 
   const handleTopup = async () => {
     setPopoverOpen(false);
-    await ipcBridge.ethantoken.openWallet.invoke();
+    if (isDesktop) {
+      await ipcBridge.ethantoken.openWallet.invoke();
+      return;
+    }
+    const base = (account.baseUrl || 'https://ethantoken.top').replace(/\/$/, '');
+    await openExternalUrl(`${base}/wallet`);
   };
 
   const handleCopyText = (text: string, successText: string) => {
@@ -449,6 +569,44 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
   const ledgerSummary = ledgerData?.summary;
   const ledgerModels = ledgerData?.models || [];
   const ledgerLogs = ledgerData?.logs || [];
+
+  const ledgerComputed = useMemo(() => {
+    const models = ledgerModels.map((row) => {
+      const effectiveOfficial = computeEffectiveOfficialRmb(row.official_rmb, row.model, ledgerBasis);
+      const effectiveSaved = Math.max(0, effectiveOfficial - row.paid_rmb);
+      return {
+        row,
+        effectiveOfficial,
+        effectiveSaved,
+      };
+    });
+
+    const paidRmb = ledgerSummary?.paid_rmb ?? models.reduce((acc, item) => acc + item.row.paid_rmb, 0);
+    const officialRmb =
+      models.length > 0
+        ? models.reduce((acc, item) => acc + item.effectiveOfficial, 0)
+        : computeEffectiveOfficialRmb(ledgerSummary?.official_rmb ?? 0, '', ledgerBasis);
+    const savedRmb = Math.max(0, officialRmb - paidRmb);
+    const savePct = officialRmb > 0 ? Math.min(99.9, Math.max(0, (savedRmb / officialRmb) * 100)) : 0;
+
+    const promptTokens = ledgerSummary?.prompt_tokens ?? 0;
+    const completionTokens = ledgerSummary?.completion_tokens ?? 0;
+    const cacheTokens = ledgerSummary?.cache_tokens ?? 0;
+    const totalInput = promptTokens + cacheTokens;
+    const cacheHitPct = totalInput > 0 ? (cacheTokens / totalInput) * 100 : 0;
+
+    return {
+      models,
+      paidRmb,
+      officialRmb,
+      savedRmb,
+      savePct,
+      calls: ledgerSummary?.calls ?? 0,
+      totalTokens: promptTokens + completionTokens,
+      cacheTokens,
+      cacheHitPct,
+    };
+  }, [ledgerModels, ledgerSummary, ledgerBasis]);
 
   const renderPanelBody = () => (
     <div className='select-none text-t-primary box-border' onClick={(e) => e.stopPropagation()}>
@@ -571,6 +729,48 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
           </>
         )}
 
+        {isDesktop && (
+          <button
+            type='button'
+            onClick={() => {
+              setPopoverOpen(false);
+              setMigrationOnboarding(false);
+              setMigrationModalOpen(true);
+            }}
+            className='box-border w-full h-36px px-10px b-none bg-transparent rd-10px hover:bg-fill-2 cursor-pointer flex items-center justify-between text-13.5px font-400 text-t-primary transition-colors'
+          >
+            <span className='flex items-center gap-10px'>
+              <span className='text-t-secondary flex items-center'>
+                <MigrateIcon />
+              </span>
+              <span>一键迁移配置</span>
+            </span>
+            <span className='text-t-tertiary flex items-center'>
+              <ChevronRightIcon />
+            </span>
+          </button>
+        )}
+
+        <button
+          type='button'
+          onClick={() => {
+            setPopoverOpen(false);
+            void navigate('/marketplace');
+            onNavigate?.();
+          }}
+          className='box-border w-full h-36px px-10px b-none bg-transparent rd-10px hover:bg-fill-2 cursor-pointer flex items-center justify-between text-13.5px font-400 text-t-primary transition-colors'
+        >
+          <span className='flex items-center gap-10px'>
+            <span className='text-t-secondary flex items-center'>
+              <MarketplaceIcon />
+            </span>
+            <span>插件市场</span>
+          </span>
+          <span className='text-t-tertiary flex items-center'>
+            <ChevronRightIcon />
+          </span>
+        </button>
+
         <button
           type='button'
           onClick={() => {
@@ -591,7 +791,7 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
         </button>
       </div>
 
-      {otherAccounts.length > 0 && (
+      {isDesktop && otherAccounts.length > 0 && (
         <>
           <div className='my-3px mx-6px border-t border-solid border-[var(--color-border-2)] border-x-0 border-b-0' />
           <div className='flex flex-col'>
@@ -615,33 +815,37 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
         </>
       )}
 
-      <div className='my-3px mx-6px border-t border-solid border-[var(--color-border-2)] border-x-0 border-b-0' />
+      {isDesktop && (
+        <>
+          <div className='my-3px mx-6px border-t border-solid border-[var(--color-border-2)] border-x-0 border-b-0' />
 
-      <div className='flex flex-col'>
-        <button
-          type='button'
-          onClick={() => void handleLogin()}
-          className='box-border w-full h-36px px-10px b-none bg-transparent rd-10px hover:bg-fill-2 cursor-pointer flex items-center gap-10px text-13.5px font-400 text-t-primary transition-colors'
-        >
-          <span className='text-t-secondary flex items-center'>
-            <SwitchAccountIcon />
-          </span>
-          <span>{account.loggedIn ? '切换或添加账号' : '浏览器登录'}</span>
-        </button>
+          <div className='flex flex-col'>
+            <button
+              type='button'
+              onClick={() => void handleLogin()}
+              className='box-border w-full h-36px px-10px b-none bg-transparent rd-10px hover:bg-fill-2 cursor-pointer flex items-center gap-10px text-13.5px font-400 text-t-primary transition-colors'
+            >
+              <span className='text-t-secondary flex items-center'>
+                <SwitchAccountIcon />
+              </span>
+              <span>{account.loggedIn ? '切换或添加账号' : '浏览器登录'}</span>
+            </button>
 
-        {account.loggedIn && (
-          <button
-            type='button'
-            onClick={() => void handleLogout()}
-            className='box-border w-full h-36px px-10px b-none bg-transparent rd-10px hover:bg-fill-2 cursor-pointer flex items-center gap-10px text-13.5px font-400 text-t-primary transition-colors'
-          >
-            <span className='text-t-secondary flex items-center'>
-              <LogoutIcon />
-            </span>
-            <span>退出登录</span>
-          </button>
-        )}
-      </div>
+            {account.loggedIn && (
+              <button
+                type='button'
+                onClick={() => void handleLogout()}
+                className='box-border w-full h-36px px-10px b-none bg-transparent rd-10px hover:bg-fill-2 cursor-pointer flex items-center gap-10px text-13.5px font-400 text-t-primary transition-colors'
+              >
+                <span className='text-t-secondary flex items-center'>
+                  <LogoutIcon />
+                </span>
+                <span>退出登录</span>
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 
@@ -656,22 +860,52 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
       >
         <div className='p-6px text-t-primary select-none'>
           <div className='flex items-center justify-between gap-12px mb-16px flex-wrap'>
-            <h3 className='m-0 text-17px font-600 text-t-primary'>用量与账单</h3>
-            <div className='inline-flex p-2px rd-999px bg-fill-2 border border-solid border-[var(--color-border-2)]'>
-              {(['today', '7d', '30d'] as LedgerRange[]).map((r) => (
-                <button
-                  key={r}
-                  type='button'
-                  onClick={() => setLedgerRange(r)}
-                  className={`px-11px py-4px b-none rd-999px text-12px font-500 cursor-pointer transition-colors ${
-                    ledgerRange === r
-                      ? 'bg-[var(--color-bg-popup)] text-t-primary shadow-sm'
-                      : 'bg-transparent text-t-secondary hover:text-t-primary'
-                  }`}
-                >
-                  {r === 'today' ? '今日' : r === '7d' ? '近 7 天' : '近 30 天'}
-                </button>
-              ))}
+            <div className='flex items-center gap-8px'>
+              <h3 className='m-0 text-17px font-600 text-t-primary'>用量与账单</h3>
+              <Tooltip content='EthanToken 站内充值为 1 元 = 1 美元额度。「1:1 额度」按 1 官方美元 = ¥1 对比真实模型折扣与缓存命中收益；切换「汇率折算」可查看按 1:6.7 官方零售人民币对比。'>
+                <span className='px-7px py-2px rd-999px text-10.5px text-t-tertiary bg-fill-2 border border-solid border-[var(--color-border-2)] cursor-help'>
+                  {ledgerBasis === 'equal' ? '1:1 口径' : '1:6.7 汇率'}
+                </span>
+              </Tooltip>
+            </div>
+            <div className='flex items-center gap-8px flex-wrap'>
+              <div className='inline-flex p-2px rd-999px bg-fill-2 border border-solid border-[var(--color-border-2)]'>
+                {(
+                  [
+                    ['equal', '1:1 额度'],
+                    ['fx', '汇率折算'],
+                  ] as Array<[LedgerBasis, string]>
+                ).map(([basisKey, label]) => (
+                  <button
+                    key={basisKey}
+                    type='button'
+                    onClick={() => setLedgerBasis(basisKey)}
+                    className={`px-9px py-4px b-none rd-999px text-11.5px font-500 cursor-pointer transition-colors ${
+                      ledgerBasis === basisKey
+                        ? 'bg-[var(--color-bg-popup)] text-t-primary shadow-sm'
+                        : 'bg-transparent text-t-secondary hover:text-t-primary'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className='inline-flex p-2px rd-999px bg-fill-2 border border-solid border-[var(--color-border-2)]'>
+                {(['today', '7d', '30d'] as LedgerRange[]).map((r) => (
+                  <button
+                    key={r}
+                    type='button'
+                    onClick={() => setLedgerRange(r)}
+                    className={`px-11px py-4px b-none rd-999px text-12px font-500 cursor-pointer transition-colors ${
+                      ledgerRange === r
+                        ? 'bg-[var(--color-bg-popup)] text-t-primary shadow-sm'
+                        : 'bg-transparent text-t-secondary hover:text-t-primary'
+                    }`}
+                  >
+                    {r === 'today' ? '今日' : r === '7d' ? '近 7 天' : '近 30 天'}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -679,27 +913,34 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
             <div className='py-12px sm:pr-14px'>
               <div className='text-12px text-t-secondary mb-4px'>实际消费</div>
               <div className='text-22px font-600 tabular-nums text-t-primary'>
-                {formatRmb(ledgerSummary?.paid_rmb ?? 0)}
+                {formatRmb(ledgerComputed.paidRmb)}
               </div>
               <div className='mt-3px text-11.5px text-t-tertiary tabular-nums'>
-                {ledgerSummary?.calls ?? 0} 次调用 ·{' '}
-                {formatTokensCompact((ledgerSummary?.prompt_tokens ?? 0) + (ledgerSummary?.completion_tokens ?? 0))} Tokens
+                {ledgerComputed.calls} 次调用 · {formatTokensCompact(ledgerComputed.totalTokens)} Tokens
               </div>
             </div>
             <div className='py-12px sm:px-16px sm:border-l sm:border-y-0 sm:border-r-0 sm:border-solid sm:border-[var(--color-border-2)]'>
-              <div className='text-12px text-t-secondary mb-4px'>官方原价</div>
-              <div className='text-22px font-600 tabular-nums text-t-secondary'>
-                {formatRmb(ledgerSummary?.official_rmb ?? 0)}
+              <div className='text-12px text-t-secondary mb-4px'>
+                {ledgerBasis === 'equal' ? '官方 1:1 标价' : '官方汇率原价'}
               </div>
-              <div className='mt-3px text-11.5px text-t-tertiary'>官方公开价</div>
-            </div>
-            <div className='py-12px sm:pl-16px sm:border-l sm:border-y-0 sm:border-r-0 sm:border-solid sm:border-[var(--color-border-2)]'>
-              <div className='text-12px text-t-secondary mb-4px'>已节省</div>
-              <div className='text-22px font-600 tabular-nums text-[#15803d] dark:text-[#34d399]'>
-                {formatRmb(ledgerSummary?.saved_rmb ?? 0)}
+              <div className='text-22px font-600 tabular-nums text-t-secondary'>
+                {formatRmb(ledgerComputed.officialRmb)}
               </div>
               <div className='mt-3px text-11.5px text-t-tertiary tabular-nums'>
-                节省 {(ledgerSummary?.save_pct ?? 0).toFixed(1)}%
+                {ledgerComputed.cacheTokens > 0
+                  ? `缓存命中 ${ledgerComputed.cacheHitPct.toFixed(0)}%（${formatTokensCompact(ledgerComputed.cacheTokens)}）`
+                  : ledgerBasis === 'equal'
+                    ? '按 1 官方美元 = ¥1 对等口径'
+                    : '按 1:6.7 官方零售汇率折算'}
+              </div>
+            </div>
+            <div className='py-12px sm:pl-16px sm:border-l sm:border-y-0 sm:border-r-0 sm:border-solid sm:border-[var(--color-border-2)]'>
+              <div className='text-12px text-t-secondary mb-4px'>真实已省</div>
+              <div className='text-22px font-600 tabular-nums text-[#15803d] dark:text-[#34d399]'>
+                {formatRmb(ledgerComputed.savedRmb)}
+              </div>
+              <div className='mt-3px text-11.5px text-t-tertiary tabular-nums'>
+                综合省下 {ledgerComputed.savePct.toFixed(1)}%
               </div>
             </div>
           </div>
@@ -736,7 +977,7 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
           ) : ledgerData?.error ? (
             <div className='py-28px text-center text-13px text-t-secondary'>{ledgerData.error}</div>
           ) : ledgerTab === 'models' ? (
-            ledgerModels.length === 0 ? (
+            ledgerComputed.models.length === 0 ? (
               <div className='py-28px text-center text-13px text-t-tertiary'>当前时间范围内暂无调用记录</div>
             ) : (
               <div className='max-h-290px overflow-y-auto'>
@@ -747,12 +988,14 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
                       <th className='text-right font-500 py-8px px-6px'>调用</th>
                       <th className='text-left font-500 py-8px px-6px'>Token（输入 / 输出 / 缓存）</th>
                       <th className='text-right font-500 py-8px px-6px'>实付</th>
-                      <th className='text-right font-500 py-8px px-6px'>官方原价</th>
-                      <th className='text-right font-500 py-8px px-6px'>节省</th>
+                      <th className='text-right font-500 py-8px px-6px'>
+                        {ledgerBasis === 'equal' ? '官方 1:1' : '官方汇率'}
+                      </th>
+                      <th className='text-right font-500 py-8px px-6px'>已省</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {ledgerModels.map((row) => (
+                    {ledgerComputed.models.map(({ row, effectiveOfficial, effectiveSaved }) => (
                       <tr
                         key={row.model}
                         className='border-b border-solid border-[var(--color-border-2)] border-x-0 border-t-0 last:border-b-0'
@@ -767,9 +1010,9 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
                             : `${formatTokensCompact(row.prompt_tokens)} / ${formatTokensCompact(row.completion_tokens)} / ${formatTokensCompact(row.cache_tokens)}`}
                         </td>
                         <td className='py-9px px-6px text-right'>{formatRmb(row.paid_rmb)}</td>
-                        <td className='py-9px px-6px text-right text-t-tertiary'>{formatRmb(row.official_rmb)}</td>
+                        <td className='py-9px px-6px text-right text-t-tertiary'>{formatRmb(effectiveOfficial)}</td>
                         <td className='py-9px px-6px text-right font-600 text-[#15803d] dark:text-[#34d399]'>
-                          {formatRmb(row.saved_rmb)}
+                          {formatRmb(effectiveSaved)}
                         </td>
                       </tr>
                     ))}
@@ -788,33 +1031,38 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
                     <th className='text-left font-500 py-8px px-6px'>模型</th>
                     <th className='text-left font-500 py-8px px-6px'>Token 用量</th>
                     <th className='text-right font-500 py-8px px-6px'>实付</th>
-                    <th className='text-right font-500 py-8px px-6px'>官方原价</th>
+                    <th className='text-right font-500 py-8px px-6px'>
+                      {ledgerBasis === 'equal' ? '官方 1:1' : '官方汇率'}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {ledgerLogs.map((row) => (
-                    <tr
-                      key={row.id}
-                      className='border-b border-solid border-[var(--color-border-2)] border-x-0 border-t-0 last:border-b-0'
-                    >
-                      <td className='py-9px px-6px text-t-tertiary whitespace-nowrap'>{formatLogTime(row.created_at)}</td>
-                      <td className='py-9px px-6px font-500' style={MONO_STYLE}>
-                        <span>{row.model}</span>
-                        {row.is_bonus && (
-                          <span className='ml-6px px-5px py-1px rd-4px text-10px bg-[#15803d]/10 text-[#15803d] dark:bg-[#34d399]/15 dark:text-[#34d399]'>
-                            签到抵扣
-                          </span>
-                        )}
-                      </td>
-                      <td className='py-9px px-6px text-11.5px text-t-secondary'>
-                        {row.prompt_tokens === 0 && row.completion_tokens === 0
-                          ? '媒体生成'
-                          : `输入 ${formatTokensCompact(row.prompt_tokens)} · 缓存 ${formatTokensCompact(row.cache_tokens)} · 输出 ${formatTokensCompact(row.completion_tokens)}`}
-                      </td>
-                      <td className='py-9px px-6px text-right'>{formatRmb(row.paid_rmb)}</td>
-                      <td className='py-9px px-6px text-right text-t-tertiary'>{formatRmb(row.official_rmb)}</td>
-                    </tr>
-                  ))}
+                  {ledgerLogs.map((row) => {
+                    const effectiveOfficial = computeEffectiveOfficialRmb(row.official_rmb, row.model, ledgerBasis);
+                    return (
+                      <tr
+                        key={row.id}
+                        className='border-b border-solid border-[var(--color-border-2)] border-x-0 border-t-0 last:border-b-0'
+                      >
+                        <td className='py-9px px-6px text-t-tertiary whitespace-nowrap'>{formatLogTime(row.created_at)}</td>
+                        <td className='py-9px px-6px font-500' style={MONO_STYLE}>
+                          <span>{row.model}</span>
+                          {row.is_bonus && (
+                            <span className='ml-6px px-5px py-1px rd-4px text-10px bg-[#15803d]/10 text-[#15803d] dark:bg-[#34d399]/15 dark:text-[#34d399]'>
+                              签到抵扣
+                            </span>
+                          )}
+                        </td>
+                        <td className='py-9px px-6px text-11.5px text-t-secondary'>
+                          {row.prompt_tokens === 0 && row.completion_tokens === 0
+                            ? '媒体生成'
+                            : `输入 ${formatTokensCompact(row.prompt_tokens)} · 缓存 ${formatTokensCompact(row.cache_tokens)} · 输出 ${formatTokensCompact(row.completion_tokens)}`}
+                        </td>
+                        <td className='py-9px px-6px text-right'>{formatRmb(row.paid_rmb)}</td>
+                        <td className='py-9px px-6px text-right text-t-tertiary'>{formatRmb(effectiveOfficial)}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -907,14 +1155,14 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
               <div className='flex items-center gap-8px'>
                 <button
                   type='button'
-                  onClick={() => void ipcBridge.shell.openExternal.invoke(community.qqJoinUrl)}
+                  onClick={() => void openExternalUrl(community.qqJoinUrl)}
                   className='flex-1 h-32px b-none rd-999px text-12px font-600 cursor-pointer transition-opacity bg-[#111111] hover:opacity-85 text-[#ffffff] dark:bg-[#f5f5f7] dark:text-[#111111]'
                 >
                   打开 QQ 加群
                 </button>
                 <button
                   type='button'
-                  onClick={() => void ipcBridge.shell.openExternal.invoke('https://ethantoken.top/')}
+                  onClick={() => void openExternalUrl('https://ethantoken.top/')}
                   className='h-32px px-12px rd-999px bg-transparent border border-solid border-[var(--color-border-3)] text-12px font-500 text-t-primary hover:bg-fill-3 cursor-pointer transition-colors'
                 >
                   官网
@@ -924,6 +1172,15 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
           </div>
         </div>
       </Modal>
+
+      <MigrationModal
+        visible={migrationModalOpen}
+        isOnboarding={migrationOnboarding}
+        onClose={() => {
+          setMigrationModalOpen(false);
+          setMigrationOnboarding(false);
+        }}
+      />
     </>
   );
 
@@ -932,7 +1189,9 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
       ? `${account.username} · 永久 ${permanentQuotaText}${isBonusActive && bonus ? ` + 限时 $${bonus.remainUsd.toFixed(2)}` : ''}`
       : authPending
         ? '点击取消浏览器授权'
-        : '登录 EthanToken 账号';
+        : isDesktop
+          ? '登录 EthanToken 账号'
+          : '同步电脑端登录状态';
     return (
       <>
         <div className='flex flex-col gap-2px mb-2px'>
@@ -1056,7 +1315,7 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({ collapsed =
                   )}
                 </span>
                 <span className='text-t-primary text-14px font-[500] leading-24px truncate'>
-                  {authPending ? '等待浏览器授权...' : '登录 EthanToken'}
+                  {authPending ? '等待浏览器授权...' : isDesktop ? '登录 EthanToken' : '同步电脑端登录状态'}
                 </span>
               </div>
 

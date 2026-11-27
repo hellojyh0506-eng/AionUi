@@ -1,6 +1,7 @@
 import { Button, Collapse, Dropdown, Menu, Modal } from '@arco-design/web-react';
 import { Down, Plus } from '@icon-park/react';
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { BUILTIN_IMAGE_GEN_ID, BUILTIN_IMAGE_GEN_NAME, type IMcpServer } from '@/common/config/storage';
 import { useMcpConnection, useMcpModal, useMcpOAuth, useMcpServerCRUD, useMcpServers } from '@/renderer/hooks/mcp';
@@ -19,6 +20,7 @@ const isOAuthCapableServer = (server: IMcpServer) =>
 
 const McpManagement: React.FC<McpManagementProps> = ({ message }) => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { mcpServers, extensionMcpServers, saveMcpServers, setMcpServers } = useMcpServers();
   const visibleMcpServers = React.useMemo(() => mcpServers.filter(isVisibleMcpServer), [mcpServers]);
   const { oauthStatus, loggingIn, checkOAuthStatus, markLoginRequired, clearLoginRequired, login } = useMcpOAuth();
@@ -154,6 +156,24 @@ const McpManagement: React.FC<McpManagementProps> = ({ message }) => {
                     }}
                   >
                     {t('settings.mcpOneKeyImport')}
+                  </Menu.Item>
+                  <Menu.Item
+                    key='marketplace'
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void navigate('/marketplace?tab=mcp');
+                    }}
+                  >
+                    从插件市场安装
+                  </Menu.Item>
+                  <Menu.Item
+                    key='migrate-clients'
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      window.dispatchEvent(new CustomEvent('ethantoken:open-migration-modal'));
+                    }}
+                  >
+                    从其他客户端一键迁移
                   </Menu.Item>
                 </Menu>
               }

@@ -10,7 +10,8 @@ import * as path from 'path';
 import { networkInterfaces } from 'os';
 import { getSystemDir } from './initStorage';
 import { httpRequest } from '@/common/adapter/httpBridge';
-import { startWebHost, type WebHostHandle } from '@aionui/web-host';
+import { startWebHost, pickLanIP, type WebHostHandle } from '@aionui/web-host';
+import { createDesktopWebuiApiHandler } from '@process/bridge/desktopWebuiBridge';
 import { getDataPath } from './utils';
 
 const WEBUI_CONFIG_FILE = 'webui.config.json';
@@ -187,16 +188,7 @@ export function setDesktopWebUIInitialPassword(password: string | undefined): vo
 }
 
 const getLanIP = (): string | null => {
-  const nets = networkInterfaces();
-  for (const name of Object.keys(nets)) {
-    const netInfo = nets[name];
-    if (!netInfo) continue;
-    for (const net of netInfo) {
-      const isIPv4 = net.family === 'IPv4' || (net.family as unknown) === 4;
-      if (isIPv4 && !net.internal) return net.address;
-    }
-  }
-  return null;
+  return pickLanIP(networkInterfaces());
 };
 
 const toDesktopHandle = (handle: WebHostHandle, allowRemote: boolean): DesktopWebUIHandle => ({
@@ -256,6 +248,7 @@ export async function startDesktopWebUI(opts: { port?: number; allowRemote?: boo
       workDir: sysDir.workDir,
       logDir: sysDir.logDir,
     },
+    customApiHandler: createDesktopWebuiApiHandler(backendPort),
     backend: {
       kind: 'useExistingBackend',
       port: backendPort,

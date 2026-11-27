@@ -14,12 +14,14 @@ import http, { type IncomingMessage, type Server, type ServerResponse } from 'no
 import { networkInterfaces } from 'node:os';
 import net, { type Socket } from 'node:net';
 import serveHandler from 'serve-handler';
+import type { CustomApiHandler } from './types.js';
 
 export type StaticServerOptions = {
   staticDir: string;
   backendPort: number;
   port?: number;
   allowRemote?: boolean;
+  customApiHandler?: CustomApiHandler;
 };
 
 export type StaticServerHandle = {
@@ -178,6 +180,11 @@ export async function startStaticServer(opts: StaticServerOptions): Promise<Stat
       if (!req.url || !req.method) {
         res.writeHead(400).end();
         return;
+      }
+
+      if (opts.customApiHandler && req.url.startsWith('/api/desktop-bridge/')) {
+        const handled = await opts.customApiHandler(req, res);
+        if (handled) return;
       }
 
       // /api/* — reverse proxy to backend (includes /api/auth/*).

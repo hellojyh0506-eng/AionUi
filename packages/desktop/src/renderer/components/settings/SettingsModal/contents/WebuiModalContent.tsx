@@ -5,7 +5,7 @@
  */
 
 import { WEBUI_DEFAULT_PORT } from '@/common/config/constants';
-import { shell, webui, type IWebUIStatus } from '@/common/adapter/ipcBridge';
+import { webui, type IWebUIStatus } from '@/common/adapter/ipcBridge';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { configService } from '@/common/config/configService';
 import AionModal from '@/renderer/components/base/AionModal';
@@ -18,7 +18,7 @@ import ChannelSlackLogo from '@/renderer/assets/channel-logos/slack.svg';
 import ChannelTelegramLogo from '@/renderer/assets/channel-logos/telegram.svg';
 import ChannelWecomLogo from '@/renderer/assets/channel-logos/wecom.svg';
 import ChannelWeixinLogo from '@/renderer/assets/channel-logos/weixin.svg';
-import { isElectronDesktop } from '@/renderer/utils/platform';
+import { isElectronDesktop, openExternalUrl } from '@/renderer/utils/platform';
 import { Button, Form, Input, Message, Switch, Tabs, Tooltip } from '@arco-design/web-react';
 import { CheckOne, Communication, Copy, Earth, EditTwo, Refresh } from '@icon-park/react';
 import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
@@ -639,7 +639,7 @@ const WebuiModalContent: React.FC = () => {
               <div className='flex items-center gap-8px min-w-0'>
                 <button
                   className='text-14px text-primary font-mono hover:underline cursor-pointer bg-transparent border-none p-0 truncate'
-                  onClick={() => shell.openExternal.invoke(getDisplayUrl()).catch(console.error)}
+                  onClick={() => openExternalUrl(getDisplayUrl()).catch(console.error)}
                 >
                   {getDisplayUrl()}
                 </button>
