@@ -9,6 +9,8 @@ import { getAcpImageFileName } from '@/common/chat/acpToolCallOutput';
 import type { NormalizedToolCall, NormalizedToolStatus, ToolMessage } from '@/common/chat/normalizeToolCall';
 import { normalizeToolMessages, hasRunningToolMessages } from '@/common/chat/normalizeToolCall';
 import LocalImageView from '@/renderer/components/media/LocalImageView';
+import McpAppWidget from '@/renderer/components/mcp/McpAppWidget';
+import { useMcpAppRegistry } from '@/renderer/hooks/mcp/useMcpAppRegistry';
 import { downloadFileFromPath } from '@/renderer/utils/file/download';
 import './MessageToolGroupSummary.css';
 
@@ -149,6 +151,18 @@ const MessageToolGroupSummary: React.FC<{ messages: ToolMessage[] }> = ({ messag
   }, [hasRunning]);
 
   const tools = useMemo(() => normalizeToolMessages(messages), [messages]);
+  const { resolveMcpAppForTool } = useMcpAppRegistry();
+  const mcpWidgets = useMemo(() => {
+    const out: Array<{ key: string; target: NonNullable<ReturnType<typeof resolveMcpAppForTool>>; input?: string; output?: string }> = [];
+    for (const item of tools) {
+      if (item.status !== 'completed') continue;
+      const target = resolveMcpAppForTool(item.name, item.output);
+      if (target) {
+        out.push({ key: item.key, target, input: item.input, output: item.output });
+      }
+    }
+    return out;
+  }, [tools, resolveMcpAppForTool]);
 
   return (
     <div className='tool-group-summary'>
@@ -168,6 +182,9 @@ const MessageToolGroupSummary: React.FC<{ messages: ToolMessage[] }> = ({ messag
           ))}
         </div>
       )}
+      {mcpWidgets.map((w) => (
+        <McpAppWidget key={`widget:${w.key}`} target={w.target} rawInput={w.input} rawOutput={w.output} />
+      ))}
     </div>
   );
 };

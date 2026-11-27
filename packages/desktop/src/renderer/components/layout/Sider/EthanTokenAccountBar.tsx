@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { mutate } from 'swr';
 import { ipcBridge } from '@/common';
 import type { EthanTokenAccountState, EthanTokenLedgerData } from '@/common/adapter/ipcBridge';
+import { PROVIDERS_SWR_KEY } from '@/renderer/hooks/agent/useModelProviderList';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { isElectronDesktop, openExternalUrl } from '@/renderer/utils/platform';
 import wechatQrImg from '@renderer/assets/ethantoken-wechat-qr.png';
@@ -213,6 +214,7 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({
 
   const syncFrontendCaches = useCallback(async () => {
     await Promise.all([
+      mutate(PROVIDERS_SWR_KEY),
       mutate('/api/providers'),
       mutate('/api/mcp/servers'),
       mutate('assistants.list'),
@@ -351,6 +353,7 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({
     const timer = setInterval(() => {
       void ipcBridge.ethantoken.refresh.invoke().then((fresh) => {
         setAccount(fresh);
+        void syncFrontendCaches();
       });
     }, 60000);
 
@@ -360,6 +363,7 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({
       lastFocusRefreshRef.current = now;
       void ipcBridge.ethantoken.refresh.invoke().then((fresh) => {
         setAccount(fresh);
+        void syncFrontendCaches();
       });
     };
     window.addEventListener('focus', handleFocus);
@@ -367,7 +371,7 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({
       clearInterval(timer);
       window.removeEventListener('focus', handleFocus);
     };
-  }, [account.loggedIn]);
+  }, [account.loggedIn, syncFrontendCaches]);
 
   const handleLogin = async () => {
     if (!isDesktop) {
@@ -495,6 +499,7 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({
     const res = await ipcBridge.ethantoken.logout.invoke();
     setAccount(res);
     setLedgerData(null);
+    await syncFrontendCaches();
     Message.info('已退出登录');
   };
 
@@ -591,9 +596,6 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({
 
     const promptTokens = ledgerSummary?.prompt_tokens ?? 0;
     const completionTokens = ledgerSummary?.completion_tokens ?? 0;
-    const cacheTokens = ledgerSummary?.cache_tokens ?? 0;
-    const totalInput = promptTokens + cacheTokens;
-    const cacheHitPct = totalInput > 0 ? (cacheTokens / totalInput) * 100 : 0;
 
     return {
       models,
@@ -603,8 +605,6 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({
       savePct,
       calls: ledgerSummary?.calls ?? 0,
       totalTokens: promptTokens + completionTokens,
-      cacheTokens,
-      cacheHitPct,
     };
   }, [ledgerModels, ledgerSummary, ledgerBasis]);
 
@@ -862,7 +862,7 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({
           <div className='flex items-center justify-between gap-12px mb-16px flex-wrap'>
             <div className='flex items-center gap-8px'>
               <h3 className='m-0 text-17px font-600 text-t-primary'>用量与账单</h3>
-              <Tooltip content='EthanToken 站内充值为 1 元 = 1 美元额度。「1:1 额度」按 1 官方美元 = ¥1 对比真实模型折扣与缓存命中收益；切换「汇率折算」可查看按 1:6.7 官方零售人民币对比。'>
+              <Tooltip content='EthanToken 站内充值为 1 元 = 1 美元额度。「1:1 额度」按 1 官方美元 = ¥1 对比站内实际折后价；切换「汇率折算」可查看按 1:6.7 官方零售人民币对比。'>
                 <span className='px-7px py-2px rd-999px text-10.5px text-t-tertiary bg-fill-2 border border-solid border-[var(--color-border-2)] cursor-help'>
                   {ledgerBasis === 'equal' ? '1:1 口径' : '1:6.7 汇率'}
                 </span>
@@ -926,12 +926,8 @@ const EthanTokenAccountBar: React.FC<EthanTokenAccountBarProps> = ({
               <div className='text-22px font-600 tabular-nums text-t-secondary'>
                 {formatRmb(ledgerComputed.officialRmb)}
               </div>
-              <div className='mt-3px text-11.5px text-t-tertiary tabular-nums'>
-                {ledgerComputed.cacheTokens > 0
-                  ? `缓存命中 ${ledgerComputed.cacheHitPct.toFixed(0)}%（${formatTokensCompact(ledgerComputed.cacheTokens)}）`
-                  : ledgerBasis === 'equal'
-                    ? '按 1 官方美元 = ¥1 对等口径'
-                    : '按 1:6.7 官方零售汇率折算'}
+              <div className='mt-3px text-11.5px text-t-tertiary'>
+                {ledgerBasis === 'equal' ? '按 1 官方美元 = ¥1 对等口径' : '按 1:6.7 官方零售汇率折算'}
               </div>
             </div>
             <div className='py-12px sm:pl-16px sm:border-l sm:border-y-0 sm:border-r-0 sm:border-solid sm:border-[var(--color-border-2)]'>

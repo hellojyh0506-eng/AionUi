@@ -18,6 +18,8 @@ import { useManagedAgents } from '@/renderer/hooks/agent/useManagedAgents';
 import { openExternalUrl } from '@/renderer/utils/platform';
 import { Button, Message, Typography } from '@arco-design/web-react';
 import TalkToButlerButton from '@/renderer/components/base/TalkToButlerButton';
+import { useTalkToButler } from '@/renderer/hooks/assistant/useTalkToButler';
+import { buildAgentInstallButlerPrompt } from './agentInstallGuide';
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import AgentCard from './AgentCard';
@@ -37,6 +39,7 @@ const LOCAL_AGENT_SETUP_GUIDE_URL = 'https://github.com/iOfficeAI/AionUi/wiki/AC
 const LocalAgents: React.FC = () => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
+  const talkToButler = useTalkToButler();
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const [testingAgentId, setTestingAgentId] = useState<string | null>(null);
@@ -279,6 +282,11 @@ const LocalAgents: React.FC = () => {
               boundAssistants={getBoundAssistants(agent, assistants)}
               onTestConnection={() => void handleTestConnection(agent.id)}
               onConfigure={() => openAgentConfig(agent.id)}
+              onGuideInstall={(mode) => {
+                void talkToButler({
+                  prompt: buildAgentInstallButlerPrompt(agent, mode),
+                });
+              }}
               isTesting={testingAgentId === agent.id}
             />
           ))}

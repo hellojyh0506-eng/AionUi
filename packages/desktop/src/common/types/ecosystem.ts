@@ -141,11 +141,15 @@ export interface MarketplaceMcpItem {
   installedVersion?: string;
   remoteVersion?: string;
   installed: boolean;
+  usageGuide?: string;
+  examplePrompts?: string[];
 }
 
 export interface MarketplaceSearchMcpResult {
   items: MarketplaceMcpItem[];
   remoteUnavailable?: boolean;
+  nextCursor?: string;
+  totalAvailable?: number;
 }
 
 export interface InstallMcpRequest {
@@ -175,6 +179,8 @@ export interface MarketplaceSkillItem {
   installs?: number;
   hasUpdate?: boolean;
   installed: boolean;
+  usageGuide?: string;
+  examplePrompts?: string[];
 }
 
 export interface MarketplaceSearchSkillsResult {
@@ -234,4 +240,46 @@ export interface AttachResourcesResult {
   updatedAssistants: number;
   totalAssistants: number;
   enabledMcpIds: string[];
+}
+
+export type RuntimeToolSource = 'bundled' | 'managed' | 'system' | 'missing';
+
+export interface RuntimeToolStatus {
+  available: boolean;
+  source: RuntimeToolSource;
+  path?: string;
+  version?: string;
+}
+
+export interface RuntimeEnvironmentReport {
+  platform: NodeJS.Platform;
+  node: RuntimeToolStatus;
+  npx: RuntimeToolStatus;
+  uv: RuntimeToolStatus;
+  uvx: RuntimeToolStatus;
+  bundledNodeDir?: string;
+  managedBinDir: string;
+}
+
+export interface InstallRuntimeResult {
+  success: boolean;
+  report: RuntimeEnvironmentReport;
+  error?: string;
+}
+
+export interface PluginDetailRequest {
+  kind: 'mcp' | 'skill';
+  id: string;
+  name: string;
+  repo?: string;
+  skillId?: string;
+  rawPath?: string;
+  repositoryUrl?: string;
+}
+
+export interface PluginDetailResult {
+  readmeMarkdown?: string;
+  usageGuide?: string;
+  examplePrompts?: string[];
+  resolvedFrom: 'local-skill' | 'github-readme' | 'github-skill' | 'curated' | 'fallback';
 }

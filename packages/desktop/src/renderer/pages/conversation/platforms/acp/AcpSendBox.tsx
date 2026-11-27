@@ -4,7 +4,9 @@ import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { isSideQuestionSupported } from '@/common/chat/sideQuestion';
 import { parseError, uuid } from '@/common/utils';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
+import { ThinkingEffortSlider, ThinkingEffortTrigger } from '@/renderer/components/agent/ThinkingEffortSlider';
 import ContextUsageIndicator from '@/renderer/components/agent/ContextUsageIndicator';
+import { normalizeThinkingOptions, useThinkingSliderPreferences } from '@/renderer/utils/thinkingEffort';
 import CommandQueuePanel from '@/renderer/components/chat/CommandQueuePanel';
 import MobileActionSheet, {
   type MobileActionSheetEntry,
@@ -174,6 +176,7 @@ const AcpSendBox: React.FC<{
   });
   const runtimeMode = runtimeConfig.mode;
   const runtimeThoughtLevel = runtimeConfig.thoughtLevel;
+  const thinkingPrefs = useThinkingSliderPreferences();
   const handleThoughtLevelSetOption = useCallback(
     async (optionId: string, value: string) => runtimeConfig.setConfigOption(optionId, value),
     [runtimeConfig]
@@ -438,22 +441,23 @@ Please check your local CLI tool authentication status`,
   const { enabled: crossSessionEnabled } = useCrossSessionMessageEnabled();
 
   // Supporting agents (mid-turn delivery) send immediately, busy or not.
-  // Non-supporting agents can no longer send while the agent is replying —
-  // that path is hard-blocked with a toast; the only way to queue a message
-  // while busy is the explicit "add to queue" entry (handleAddToQueue below).
+  // Non-supporting agents silently auto-enqueue to the Draft box with auto-send
+  // enabled so pressing Enter while busy never stalls or pops a blocking toast.
   const onSendHandler = async (message: string): Promise<void | false> => {
-    if (!supportsMidturnDelivery && isBusy) {
-      Message.warning(
-        t('conversation.commandQueue.midturnBlocked', {
-          defaultValue:
-            'This agent is still working, so the message can’t be sent directly. Save it to Draft box and send it later.',
-        })
-      );
-      return false;
-    }
-
     const allFiles = collectChatFileRefs(uploadFile, atPath);
     const sessions = selectedSessions.length > 0 ? selectedSessions : undefined;
+
+    if (!supportsMidturnDelivery && isBusy) {
+      const queued = enqueue({ input: message, files: allFiles, sessions, autoSend: true });
+      if (!queued) {
+        return false;
+      }
+      clearFiles();
+      setSelectedSessions([]);
+      emitter.emit('acp.selected.file.clear');
+      return;
+    }
+
     clearFiles();
     setSelectedSessions([]);
     emitter.emit('acp.selected.file.clear');
@@ -583,28 +587,38 @@ Please check your local CLI tool authentication status`,
       });
     }
 
-    if (runtimeThoughtLevel) {
+    if (thinkingPrefs.enabled && runtimeThoughtLevel) {
+      const normalized = normalizeThinkingOptions(runtimeThoughtLevel.options);
+      const currentValue = runtimeThoughtLevel.currentValue || normalized[0]?.value || '';
+      const handleSheetThoughtSelect = (value: string) => {
+        void handleThoughtLevelSetOption(runtimeThoughtLevel.id, value)
+          .then(() => Message.success(t('agent.thoughtLevel.switchSuccess')))
+          .catch((error) => Message.error(t(configErrorMessageKey(error))));
+      };
       entries.push({
         key: 'thought-level',
         icon: <Brain theme='outline' size='16' />,
-        label: t('agent.thoughtLevel.label'),
-        meta:
-          runtimeThoughtLevel.options.find((item) => item.value === runtimeThoughtLevel.currentValue)?.label ||
-          runtimeThoughtLevel.currentValue ||
-          '',
+        label: t('agent.thoughtLevel.label', { defaultValue: '推理等级' }),
+        meta: normalized.find((item) => item.value === currentValue)?.label || currentValue || '',
         submenu: {
-          title: t('agent.thoughtLevel.label'),
-          options: runtimeThoughtLevel.options.map((item) => ({
+          title: t('agent.thoughtLevel.label', { defaultValue: '推理等级' }),
+          customContent:
+            thinkingPrefs.style === 'codex-slider' ? (
+              <ThinkingEffortSlider
+                fullWidth
+                styleVariant='codex-slider'
+                options={normalized}
+                value={currentValue}
+                onChange={handleSheetThoughtSelect}
+              />
+            ) : undefined,
+          options: normalized.map((item) => ({
             key: item.value,
             label: item.label,
             description: item.description ?? undefined,
-            active: runtimeThoughtLevel.currentValue === item.value,
+            active: currentValue === item.value,
           })),
-          onSelect: (value) => {
-            void handleThoughtLevelSetOption(runtimeThoughtLevel.id, value)
-              .then(() => Message.success(t('agent.thoughtLevel.switchSuccess')))
-              .catch((error) => Message.error(t(configErrorMessageKey(error))));
-          },
+          onSelect: handleSheetThoughtSelect,
         },
       });
     }
@@ -691,6 +705,8 @@ Please check your local CLI tool authentication status`,
     runtimeThoughtLevel,
     selectModel,
     setContent,
+    thinkingPrefs.enabled,
+    thinkingPrefs.style,
     t,
   ]);
 
@@ -820,15 +836,8 @@ Please check your local CLI tool authentication status`,
         active={teamRuntime?.isActive}
         onFocused={teamRuntime?.onFocus}
         disabled={false}
-        sendDisabled={!supportsMidturnDelivery && isBusy}
-        sendDisabledTooltip={
-          !supportsMidturnDelivery && isBusy
-            ? t('conversation.commandQueue.midturnBlockedSendHint', {
-                defaultValue:
-                  'The current agent is still working and cannot receive another message yet. Add it to Draft box instead.',
-              })
-            : undefined
-        }
+        sendDisabled={false}
+        sendTooltip={!supportsMidturnDelivery && isBusy ? '加入草稿箱排队发送 · Enter' : undefined}
         placeholder={t('acp.sendbox.placeholder', {
           backend: agent_name || backend,
           defaultValue: `Send message to {{backend}}...`,
@@ -850,6 +859,10 @@ Please check your local CLI tool authentication status`,
         }
         rightTools={
           <div className='flex items-center gap-8px min-w-0'>
+            <ThinkingEffortTrigger
+              runtimeOption={runtimeThoughtLevel}
+              onSetRuntimeOption={handleThoughtLevelSetOption}
+            />
             {showModeSelector && (
               <AgentModeSelector
                 backend={backend}

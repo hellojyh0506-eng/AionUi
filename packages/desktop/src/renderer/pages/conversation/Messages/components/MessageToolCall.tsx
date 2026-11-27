@@ -8,6 +8,8 @@ import type { IMessageToolCall } from '@/common/chat/chatLib';
 import { normalizeToolCall } from '@/common/chat/normalizeToolCall';
 import type { NormalizedToolStatus } from '@/common/chat/normalizeToolCall';
 import FileChangesPanel from '@/renderer/components/base/FileChangesPanel';
+import McpAppWidget from '@/renderer/components/mcp/McpAppWidget';
+import { useMcpAppRegistry } from '@/renderer/hooks/mcp/useMcpAppRegistry';
 import { useDiffPreviewHandlers } from '@/renderer/hooks/file/useDiffPreviewHandlers';
 import { parseDiff } from '@/renderer/utils/file/diffUtils';
 import { Badge } from '@arco-design/web-react';
@@ -57,6 +59,7 @@ const ReplacePreview: React.FC<{ message: IMessageToolCall }> = ({ message }) =>
 const MessageToolCall: React.FC<{ message: IMessageToolCall }> = ({ message }) => {
   const { name } = message.content;
   const [expanded, setExpanded] = useState(false);
+  const { resolveMcpAppForTool } = useMcpAppRegistry();
 
   if (name === 'replace' || name === 'Edit') {
     return <ReplacePreview message={message} />;
@@ -68,6 +71,8 @@ const MessageToolCall: React.FC<{ message: IMessageToolCall }> = ({ message }) =
   }
 
   const hasDetail = normalized.input || normalized.output;
+  const mcpTarget =
+    normalized.status === 'completed' ? resolveMcpAppForTool(normalized.name, normalized.output) : null;
 
   return (
     <div className='flex flex-col'>
@@ -112,6 +117,7 @@ const MessageToolCall: React.FC<{ message: IMessageToolCall }> = ({ message }) =
           )}
         </div>
       )}
+      {mcpTarget && <McpAppWidget target={mcpTarget} rawInput={normalized.input} rawOutput={normalized.output} />}
     </div>
   );
 };

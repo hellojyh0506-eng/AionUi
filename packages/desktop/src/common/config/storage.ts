@@ -654,6 +654,8 @@ export interface IConversationMcpStatus {
 export const BUILTIN_IMAGE_GEN_ID = 'builtin-image-gen';
 export const BUILTIN_IMAGE_GEN_NAME = 'aionui-image-generation';
 export const BUILTIN_IMAGE_GEN_LEGACY_NAMES = ['AionUi Image Generation', BUILTIN_IMAGE_GEN_ID] as const;
+/** Built-in local Knowledge Base MCP server name */
+export const BUILTIN_KNOWLEDGE_MCP_NAME = 'aionui-knowledge-base';
 
 export interface IMcpTool {
   name: string;

@@ -6,7 +6,17 @@
 
 import { ipcBridge } from '@/common';
 import AtFileMenu from '@/renderer/components/chat/AtFileMenu';
+import AtKnowledgeMenu, {
+  buildKnowledgeMenuOptions,
+  type KnowledgeMenuOption,
+} from '@/renderer/components/chat/AtKnowledgeMenu';
 import AtSessionMenu from '@/renderer/components/chat/AtSessionMenu';
+import type { KnowledgeCollection } from '@/common/types/knowledge';
+import {
+  buildAtKnowledgeInsertion,
+  extractKnowledgeMentions,
+  getActiveAtKnowledgeQuery,
+} from '@/renderer/utils/chat/atKnowledgeQuery';
 import BtwOverlay from '@/renderer/components/chat/BtwOverlay';
 import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/components/chat/SlashCommandMenu';
@@ -46,13 +56,14 @@ import { copyText } from '@/renderer/utils/ui/clipboard';
 import { blurActiveElement, shouldBlockMobileInputFocus } from '@/renderer/utils/ui/focus';
 import { isPlatformPrimaryModifier } from '@/renderer/utils/ui/keyboardShortcuts';
 import { isMacOS } from '@/renderer/utils/platform';
-import { Button, Input, Message, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, Dropdown, Input, Menu, Message, Tag, Tooltip } from '@arco-design/web-react';
 import { CloseSmall, Plus, Quote } from '@icon-park/react';
 import { chatFileRefKey } from '@/common/types/chatFile';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
 import { buildSkillSlashCommands, mergeSlashCommands } from '@/common/chat/slash/mergeSlashCommands';
 import React, { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import useSWR from 'swr';
 import { useCompositionInput } from '@renderer/hooks/chat/useCompositionInput';
 import { useConversationExport } from '@renderer/hooks/file/useConversationExport';
@@ -70,6 +81,23 @@ import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { createChainedDispatch, useLiveTranscriptInsertion } from '@/renderer/hooks/system/useLiveTranscriptInsertion';
 import { getConversationInputHistory, isCaretOnFirstLine } from '@/renderer/utils/chat/messageHistory';
 import './sendbox.css';
+
+const KnowledgeBookIcon = ({ size = 17 }: { size?: number }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox='0 0 24 24'
+    fill='none'
+    stroke='currentColor'
+    strokeWidth='1.75'
+    strokeLinecap='round'
+    strokeLinejoin='round'
+  >
+    <path d='M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20' />
+    <path d='M8 7h8' />
+    <path d='M8 11h5' />
+  </svg>
+);
 
 const constVoid = (): void => undefined;
 // 临界值：超过该字符数直接切换至多行模式，避免为超长文本做昂贵的宽度测量
@@ -258,6 +286,7 @@ const SendBox: React.FC<{
   onAddToDraft?: () => void;
   addToDraftDisabled?: boolean;
   addToDraftTooltip?: React.ReactNode;
+  sendTooltip?: React.ReactNode;
   sendDisabledTooltip?: React.ReactNode;
   slash_commands?: SlashCommandItem[];
   onSlashBuiltinCommand?: (name: string) => void;
@@ -318,6 +347,7 @@ const SendBox: React.FC<{
   onAddToDraft,
   addToDraftDisabled = false,
   addToDraftTooltip,
+  sendTooltip,
   sendDisabledTooltip,
   slash_commands = [],
   onSlashBuiltinCommand,
@@ -377,6 +407,16 @@ const SendBox: React.FC<{
   const [dismissedAtFileToken, setDismissedAtFileToken] = useState<string | null>(null);
   const [atSessionMenuActiveIndex, setAtSessionMenuActiveIndex] = useState(0);
   const [dismissedAtSessionToken, setDismissedAtSessionToken] = useState<string | null>(null);
+  const [atKnowledgeMenuActiveIndex, setAtKnowledgeMenuActiveIndex] = useState(0);
+  const [dismissedAtKnowledgeToken, setDismissedAtKnowledgeToken] = useState<string | null>(null);
+  const [selectedKbIds, setSelectedKbIds] = useState<string[]>([]);
+  const [kbDropdownOpen, setKbDropdownOpen] = useState(false);
+  const navigate = useNavigate();
+  const { data: knowledgeCollections = [] } = useSWR<KnowledgeCollection[]>(
+    'knowledge:collections',
+    () => ipcBridge.knowledge.listCollections.invoke().catch((): KnowledgeCollection[] => []),
+    { revalidateOnFocus: false, dedupingInterval: 15000 }
+  );
   /** id → name for the sessions the user picked, so reconciliation can match a
    *  `@@name` token back to a ref. Kept here rather than as a prop: only this
    *  component knows which names it inserted. */
@@ -559,6 +599,11 @@ const SendBox: React.FC<{
     }
     return `${activeAtSessionQuery.start}:${activeAtSessionQuery.rawQuery}`;
   }, [activeAtSessionQuery]);
+  const activeAtKnowledgeQuery = useMemo(() => getActiveAtKnowledgeQuery(input, caretPosition), [caretPosition, input]);
+  const activeAtKnowledgeTokenKey = useMemo(() => {
+    if (!activeAtKnowledgeQuery) return null;
+    return `${activeAtKnowledgeQuery.start}:${activeAtKnowledgeQuery.rawQuery}`;
+  }, [activeAtKnowledgeQuery]);
   // Empty when the feature is unavailable: a `@@` the agent cannot act on is
   // literal text, so painting it would claim a reference that does not exist.
   const allAtSessionQueries = useMemo(
@@ -720,12 +765,21 @@ const SendBox: React.FC<{
     Boolean(activeAtSessionQuery) &&
     activeAtSessionTokenKey !== dismissedAtSessionToken &&
     !isCommandMenuOpen;
+  const isAtKnowledgeMenuOpen =
+    Boolean(activeAtKnowledgeQuery) &&
+    activeAtKnowledgeTokenKey !== dismissedAtKnowledgeToken &&
+    !isCommandMenuOpen;
+  const knowledgeMenuOptions = useMemo(
+    () => buildKnowledgeMenuOptions(knowledgeCollections, activeAtKnowledgeQuery?.query ?? ''),
+    [knowledgeCollections, activeAtKnowledgeQuery?.query]
+  );
   const sessionMentionSearch = useSessionMentionSearch({
     query: activeAtSessionQuery?.query ?? '',
     conversationId: conversationContext?.conversation_id ?? '',
     enabled: isAtSessionMenuOpen && Boolean(conversationContext?.conversation_id),
   });
-  const isOverlayOpen = isCommandMenuOpen || btwCommand.isOpen || isAtFileMenuOpen || isAtSessionMenuOpen;
+  const isOverlayOpen =
+    isCommandMenuOpen || btwCommand.isOpen || isAtFileMenuOpen || isAtSessionMenuOpen || isAtKnowledgeMenuOpen;
 
   const getTextareaElement = useCallback((): HTMLTextAreaElement | null => {
     const textarea = containerRef.current?.querySelector('textarea');
@@ -742,6 +796,17 @@ const SendBox: React.FC<{
     [latestInputRef, setInputRef]
   );
   useConversationSendBoxPrefill(conversationContext?.conversation_id, handleConversationPrefill);
+
+  useEffect(() => {
+    const handleWidgetPrefill = (event: Event) => {
+      const detail = (event as CustomEvent<{ prompt?: string }>).detail;
+      const prompt = detail?.prompt?.trim();
+      if (!prompt) return;
+      handleConversationPrefill({ prompt, requestId: Date.now() });
+    };
+    window.addEventListener('ethantoken:prefill-chat-input', handleWidgetPrefill);
+    return () => window.removeEventListener('ethantoken:prefill-chat-input', handleWidgetPrefill);
+  }, [handleConversationPrefill]);
 
   useEffect(() => {
     if (!prefillFocusRequest || input !== prefillFocusRequest.expectedValue) {
@@ -987,6 +1052,18 @@ const SendBox: React.FC<{
   useEffect(() => {
     setAtSessionMenuActiveIndex(0);
   }, [activeAtSessionTokenKey]);
+
+  useEffect(() => {
+    setAtKnowledgeMenuActiveIndex(0);
+  }, [activeAtKnowledgeTokenKey]);
+
+  useEffect(() => {
+    if (!knowledgeMenuOptions.length) {
+      setAtKnowledgeMenuActiveIndex(0);
+      return;
+    }
+    setAtKnowledgeMenuActiveIndex((previous) => Math.min(previous, knowledgeMenuOptions.length - 1));
+  }, [knowledgeMenuOptions]);
 
   useEffect(() => {
     if (!sessionMentionSearch.items.length) {
@@ -1248,6 +1325,33 @@ const SendBox: React.FC<{
     [activeAtSessionQuery, getTextareaElement, input, onSelectedSessionsChange, selectedSessions, setInput]
   );
 
+  const insertSelectedAtKnowledge = useCallback(
+    (option: KnowledgeMenuOption) => {
+      if (!activeAtKnowledgeQuery) {
+        return;
+      }
+      const nextInsertion = buildAtKnowledgeInsertion(option.isAll ? '全部' : option.name);
+      const { value: nextValue, caret: nextCaret } = applyMentionInsertion(
+        input,
+        activeAtKnowledgeQuery.start,
+        activeAtKnowledgeQuery.end,
+        nextInsertion
+      );
+      setDismissedAtKnowledgeToken(`${activeAtKnowledgeQuery.start}:${nextInsertion.slice(1)}`);
+      setInput(nextValue);
+      setSelectedKbIds((prev) => (prev.includes(option.id) ? prev : [...prev, option.id]));
+
+      requestAnimationFrame(() => {
+        const textarea = getTextareaElement();
+        if (!textarea) return;
+        textarea.focus();
+        textarea.setSelectionRange(nextCaret, nextCaret);
+        setCaretPosition(nextCaret);
+      });
+    },
+    [activeAtKnowledgeQuery, getTextareaElement, input, setInput]
+  );
+
   // Deleting a `@@` token must retract the reference. Same shape as the file
   // reconciliation above: the token is a label, the ref list is authoritative.
   useEffect(() => {
@@ -1504,6 +1608,44 @@ const SendBox: React.FC<{
     ]
   );
 
+  const handleAtKnowledgeMenuKeyDown = useCallback(
+    (event: React.KeyboardEvent): boolean => {
+      if (!isAtKnowledgeMenuOpen || !activeAtKnowledgeTokenKey) {
+        return false;
+      }
+      const action = resolveAtFileMenuKey(event.key, knowledgeMenuOptions.length > 0);
+      if (!action) {
+        return false;
+      }
+      event.preventDefault();
+      if (action === 'dismiss') {
+        setDismissedAtKnowledgeToken(activeAtKnowledgeTokenKey);
+        return true;
+      }
+      if (action === 'down') {
+        setAtKnowledgeMenuActiveIndex((previous) => (previous + 1) % knowledgeMenuOptions.length);
+        return true;
+      }
+      if (action === 'up') {
+        setAtKnowledgeMenuActiveIndex((previous) => (previous - 1 + knowledgeMenuOptions.length) % knowledgeMenuOptions.length);
+        return true;
+      }
+      const selected = knowledgeMenuOptions[atKnowledgeMenuActiveIndex];
+      if (!selected) {
+        return false;
+      }
+      insertSelectedAtKnowledge(selected);
+      return true;
+    },
+    [
+      activeAtKnowledgeTokenKey,
+      atKnowledgeMenuActiveIndex,
+      insertSelectedAtKnowledge,
+      isAtKnowledgeMenuOpen,
+      knowledgeMenuOptions,
+    ]
+  );
+
   const handleAtFileMenuKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
       if (!isAtFileMenuOpen || !activeAtFileTokenKey) {
@@ -1594,7 +1736,9 @@ const SendBox: React.FC<{
     setHistoryNavigationIndex(null);
 
     // 构建消息内容 / Build message content
-    let finalMessage = input;
+    const rawInputSnapshot = input;
+    const kbChipsSnapshot = [...selectedKbIds];
+    let baseMessage = rawInputSnapshot;
 
     // Prepend reply quote as blockquote
     if (replyQuote) {
@@ -1602,7 +1746,7 @@ const SendBox: React.FC<{
         .split('\n')
         .map((line) => `> ${line}`)
         .join('\n');
-      finalMessage = `${quotedLines}\n\n${finalMessage}`;
+      baseMessage = `${quotedLines}\n\n${baseMessage}`;
     }
 
     // 如果有 DOM 片段，附加完整 HTML / If has DOM snippets, append full HTML
@@ -1610,7 +1754,7 @@ const SendBox: React.FC<{
       const snippetsHtml = domSnippets
         .map((s) => `\n\n---\nDOM Snippet (${s.tag}):\n\`\`\`html\n${s.html}\n\`\`\``)
         .join('');
-      finalMessage = input + snippetsHtml;
+      baseMessage = rawInputSnapshot + snippetsHtml;
     }
 
     // 立即清空输入框，避免异步 onSend 完成后覆盖用户新输入
@@ -1618,17 +1762,42 @@ const SendBox: React.FC<{
     setInput('');
     clearDomSnippets();
     setReplyQuote(null);
+    setSelectedKbIds([]);
 
-    onSend(finalMessage)
-      .then((result) => {
+    void (async () => {
+      let messageToSend = baseMessage;
+      const mentionedNames = extractKnowledgeMentions(rawInputSnapshot);
+      const wantsAllKb =
+        kbChipsSnapshot.includes('__all__') ||
+        mentionedNames.some((n) => n === '全部' || n.toLowerCase() === 'all');
+
+      const matchedCollectionIds = new Set<string>(kbChipsSnapshot.filter((id) => id !== '__all__'));
+      for (const mName of mentionedNames) {
+        const matchCol = knowledgeCollections.find((c) => c.name.toLowerCase() === mName.toLowerCase());
+        if (matchCol) matchedCollectionIds.add(matchCol.id);
+      }
+
+      if ((wantsAllKb || matchedCollectionIds.size > 0) && knowledgeCollections.length > 0) {
+        const selectedLabels = wantsAllKb
+          ? ['全部本地知识空间']
+          : Array.from(matchedCollectionIds).map((id) => knowledgeCollections.find((c) => c.id === id)?.name || id);
+        const idsJson = wantsAllKb ? '[]' : JSON.stringify(Array.from(matchedCollectionIds));
+        const hint = `[已关联本地知识空间：${selectedLabels.join('、')}（collectionIds: ${idsJson}）。仅当本轮问题与该知识空间资料相关时，再调用内置 MCP 工具 knowledge_search 按需检索；与资料无关的话题请直接回答，勿强行引用无关文档。]`;
+        messageToSend = `${baseMessage}\n\n${hint}`;
+      }
+
+      try {
+        const result = await onSend(messageToSend);
         if (result === false) {
-          setInput(finalMessage);
+          setInput(rawInputSnapshot);
+          setSelectedKbIds(kbChipsSnapshot);
         }
-      })
-      .catch(() => {})
-      .finally(() => {
+      } catch {
+        // ignore
+      } finally {
         setIsLoading(false);
-      });
+      }
+    })();
   };
 
   const stopHandler = async () => {
@@ -1673,7 +1842,11 @@ const SendBox: React.FC<{
     defaultValue: isMacOS() ? '⌘ + Enter' : 'Ctrl + Enter',
   });
   const sendActionTooltip =
-    sendDisabled && sendDisabledTooltip ? sendDisabledTooltip : `${sendNowLabel} · ${enterShortcutLabel}`;
+    sendDisabled && sendDisabledTooltip
+      ? sendDisabledTooltip
+      : sendTooltip
+        ? sendTooltip
+        : `${sendNowLabel} · ${enterShortcutLabel}`;
   const draftActionBaseTooltip = addToDraftTooltip ?? addToDraftLabel;
 
   const handlePrimaryAction = () => {
@@ -1760,6 +1933,59 @@ const SendBox: React.FC<{
       </span>
     </Tooltip>
   ) : null;
+
+  const knowledgePickerButton = (
+    <Dropdown
+      popupVisible={kbDropdownOpen}
+      onVisibleChange={setKbDropdownOpen}
+      position='tl'
+      trigger='click'
+      droplist={
+        <Menu
+          style={{ minWidth: 220, maxWidth: 280 }}
+          onClickMenuItem={(key) => {
+            setKbDropdownOpen(false);
+            if (key === '__manage__') {
+              void navigate('/knowledge');
+              return;
+            }
+            setSelectedKbIds((prev) => (prev.includes(key) ? prev : [...prev, key]));
+          }}
+        >
+          {knowledgeCollections.length > 0 ? (
+            <>
+              <Menu.Item key='__all__'>全部知识空间（{knowledgeCollections.length}）</Menu.Item>
+              {knowledgeCollections.map((col) => (
+                <Menu.Item key={col.id}>
+                  <span className='flex items-center justify-between gap-8px'>
+                    <span className='truncate'>{col.name}</span>
+                    <span className='text-11px text-t-tertiary shrink-0'>{col.documentCount} 篇</span>
+                  </span>
+                </Menu.Item>
+              ))}
+            </>
+          ) : (
+            <Menu.Item key='__empty__' disabled>
+              暂无本地知识空间
+            </Menu.Item>
+          )}
+          <Menu.Item key='__manage__'>打开知识空间工作台 →</Menu.Item>
+        </Menu>
+      }
+    >
+      <Tooltip popupVisible={kbDropdownOpen ? false : undefined} content='引用知识空间（@kb / @知识）' position='top'>
+        <span className='inline-flex'>
+          <Button
+            shape='circle'
+            type='secondary'
+            className={selectedKbIds.length > 0 ? '!bg-[rgb(var(--primary-1))] !text-[rgb(var(--primary-6))]' : ''}
+            icon={<KnowledgeBookIcon size={17} />}
+            aria-label='引用知识空间'
+          />
+        </span>
+      </Tooltip>
+    </Dropdown>
+  );
 
   const stopButton = (
     <Button
@@ -1954,6 +2180,16 @@ const SendBox: React.FC<{
           parentTaskRunning={Boolean(loading || isLoading)}
           question={btwCommand.question}
         />
+        {isAtKnowledgeMenuOpen && (
+          <div className='absolute start-12px end-12px bottom-[calc(100%+8px)] z-70'>
+            <AtKnowledgeMenu
+              items={knowledgeMenuOptions}
+              activeIndex={atKnowledgeMenuActiveIndex}
+              onHoverItem={setAtKnowledgeMenuActiveIndex}
+              onSelectItem={insertSelectedAtKnowledge}
+            />
+          </div>
+        )}
         {isAtSessionMenuOpen && (
           <div className='absolute start-12px end-12px bottom-[calc(100%+8px)] z-70'>
             <AtSessionMenu
@@ -2079,6 +2315,27 @@ const SendBox: React.FC<{
               ))}
             </div>
           )}
+          {selectedKbIds.length > 0 && (
+            <div className='flex flex-wrap gap-6px mb-8px'>
+              {selectedKbIds.map((kbId) => {
+                const label =
+                  kbId === '__all__'
+                    ? '全部本地知识库'
+                    : knowledgeCollections.find((c) => c.id === kbId)?.name || kbId;
+                return (
+                  <Tag
+                    key={`kb:${kbId}`}
+                    closable
+                    closeIcon={<CloseSmall theme='outline' size='12' />}
+                    onClose={() => setSelectedKbIds((prev) => prev.filter((id) => id !== kbId))}
+                    className='text-12px bg-fill-2 b-1 b-solid b-border-2 rd-4px'
+                  >
+                    知识库：{label}
+                  </Tag>
+                );
+              })}
+            </div>
+          )}
           {unmatchedSelectedWorkspaceItems.length > 0 && onSelectedWorkspaceItemsChange && (
             <div className='flex flex-wrap gap-6px mb-8px'>
               {unmatchedSelectedWorkspaceItems.map((item) => (
@@ -2124,6 +2381,7 @@ const SendBox: React.FC<{
             >
               <span className='sendbox-left-tool-group'>
                 {renderedTools}
+                {knowledgePickerButton}
                 {draftActionButton}
               </span>
             </div>
@@ -2200,6 +2458,7 @@ const SendBox: React.FC<{
               onKeyDown={createKeyDownHandler(handlePrimaryAction, (event) => {
                 return (
                   handleAddToDraftShortcut(event) ||
+                  handleAtKnowledgeMenuKeyDown(event) ||
                   handleAtSessionMenuKeyDown(event) ||
                   handleAtFileMenuKeyDown(event) ||
                   handleOverlayKeyDown(event) ||
@@ -2229,6 +2488,7 @@ const SendBox: React.FC<{
             >
               <span className='sendbox-left-tool-group'>
                 {renderedTools}
+                {knowledgePickerButton}
                 {draftActionButton}
               </span>
             </div>

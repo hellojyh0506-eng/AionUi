@@ -6,7 +6,9 @@
 
 import { ipcBridge } from '@/common';
 import type { IMcpServer, IProvider, TProviderWithModel } from '@/common/config/storage';
+import type { KnowledgeCollection } from '@/common/types/knowledge';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
+import { ThinkingEffortSlider } from '@/renderer/components/agent/ThinkingEffortSlider';
 import { DROPDOWN_SEARCH_THRESHOLD } from '@/renderer/components/agent/runtimeSelectorOptions';
 import AionInlineSearchInput from '@/renderer/components/base/AionInlineSearchInput';
 import MobileActionSheet from '@/renderer/components/chat/MobileActionSheet';
@@ -16,6 +18,13 @@ import type {
 } from '@/renderer/components/chat/MobileActionSheet/types';
 import type { AgentModeOption } from '@/renderer/utils/model/agentTypes';
 import type { AgentRuntimeDerivedOption } from '@/renderer/utils/model/agentRuntimeCatalog';
+import {
+  getModelThinkingLevel,
+  normalizeThinkingOptions,
+  resolveModelThinkingSpec,
+  setModelThinkingLevel,
+  useThinkingSliderPreferences,
+} from '@/renderer/utils/thinkingEffort';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { getCleanFileNames, FileService } from '@/renderer/services/FileService';
 import { iconColors } from '@/renderer/styles/colors';
@@ -25,6 +34,7 @@ import { getAvailableModels } from '../utils/modelUtils';
 import { Button, Checkbox, Dropdown, Menu, Message, Tooltip } from '@arco-design/web-react';
 import {
   ArrowUp,
+  BookOpen,
   Brain,
   FolderOpen,
   FolderUpload,
@@ -114,6 +124,11 @@ type GuidActionRowProps = {
   loading: boolean;
   isButtonDisabled: boolean;
   speechInputNode?: React.ReactNode;
+  thinkingTriggerNode?: React.ReactNode;
+  knowledgeCollections?: KnowledgeCollection[];
+  selectedKbIds?: string[];
+  onToggleKbId?: (id: string) => void;
+  onOpenKnowledgePage?: () => void;
   onSend: () => void;
 };
 
@@ -145,12 +160,19 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   loading,
   isButtonDisabled,
   speechInputNode,
+  thinkingTriggerNode,
+  knowledgeCollections = [],
+  selectedKbIds = [],
+  onToggleKbId,
+  onOpenKnowledgePage,
   onSend,
 }) => {
   const { t } = useTranslation();
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
+  const thinkingPrefs = useThinkingSliderPreferences();
   const [isPlusDropdownOpen, setIsPlusDropdownOpen] = useState(false);
+  const [isKbDropdownOpen, setIsKbDropdownOpen] = useState(false);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [skillQuery, setSkillQuery] = useState('');
   const [mcpQuery, setMcpQuery] = useState('');
@@ -164,7 +186,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
     }
   }, []);
   const showModeSwitch = dynamicModes.length > 0;
-  const configOptionCount = (modelSelectorNode ? 1 : 0) + (showModeSwitch ? 1 : 0);
+  const configOptionCount = (modelSelectorNode ? 1 : 0) + (showModeSwitch ? 1 : 0) + (thinkingTriggerNode ? 1 : 0);
 
   // Browser file picker ref (WebUI only)
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -274,17 +296,29 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
       });
     }
 
-    // Thought level (ACP agents only).
-    if (thoughtLevelOption && thoughtLevelOption.options.length > 0 && onThoughtLevelSelect) {
-      const currentValue = thoughtLevelOption.currentValue;
+    // Thought level (ACP runtime option OR aionrs model capability).
+    const modelSpec = isGeminiMode ? resolveModelThinkingSpec(current_model?.use_model) : null;
+    if (thinkingPrefs.enabled && thoughtLevelOption && thoughtLevelOption.options.length > 0 && onThoughtLevelSelect) {
+      const normalized = normalizeThinkingOptions(thoughtLevelOption.options);
+      const currentValue = thoughtLevelOption.currentValue || normalized[0]?.value || '';
       entries.push({
         key: 'thought-level',
         icon: <Brain theme='outline' size='16' />,
-        label: t('agent.thoughtLevel.label'),
-        meta: thoughtLevelOption.options.find((o) => o.value === currentValue)?.label || currentValue || '',
+        label: t('agent.thoughtLevel.label', { defaultValue: '推理等级' }),
+        meta: normalized.find((o) => o.value === currentValue)?.label || currentValue || '',
         submenu: {
-          title: t('agent.thoughtLevel.label'),
-          options: thoughtLevelOption.options.map((o) => ({
+          title: t('agent.thoughtLevel.label', { defaultValue: '推理等级' }),
+          customContent:
+            thinkingPrefs.style === 'codex-slider' ? (
+              <ThinkingEffortSlider
+                fullWidth
+                styleVariant='codex-slider'
+                options={normalized}
+                value={currentValue}
+                onChange={(value) => onThoughtLevelSelect(value)}
+              />
+            ) : undefined,
+          options: normalized.map((o) => ({
             key: o.value,
             label: o.label,
             description: o.description ?? undefined,
@@ -292,6 +326,77 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
           })),
           onSelect: (value) => onThoughtLevelSelect(value),
         },
+      });
+    } else if (thinkingPrefs.enabled && modelSpec && current_model?.use_model) {
+      const normalized = modelSpec.options;
+      const activeValue = getModelThinkingLevel(thinkingPrefs, current_model.use_model, modelSpec);
+      const handleModelEffortChange = (value: string) => {
+        if (current_model.use_model) {
+          setModelThinkingLevel(current_model.use_model, value);
+        }
+      };
+      entries.push({
+        key: 'thought-level',
+        icon: <Brain theme='outline' size='16' />,
+        label: t('agent.thoughtLevel.label', { defaultValue: '推理等级' }),
+        meta: normalized.find((o) => o.value === activeValue)?.label || activeValue || '',
+        submenu: {
+          title: t('agent.thoughtLevel.label', { defaultValue: '推理等级' }),
+          customContent:
+            thinkingPrefs.style === 'codex-slider' ? (
+              <ThinkingEffortSlider
+                fullWidth
+                styleVariant='codex-slider'
+                options={normalized}
+                value={activeValue}
+                onChange={handleModelEffortChange}
+              />
+            ) : undefined,
+          options: normalized.map((o) => ({
+            key: o.value,
+            label: o.label,
+            description: o.description ?? undefined,
+            active: o.value === activeValue,
+          })),
+          onSelect: handleModelEffortChange,
+        },
+      });
+    }
+
+    // Knowledge collections (multi-select on mobile).
+    if (onToggleKbId) {
+      entries.push({
+        key: 'knowledge',
+        icon: <BookOpen theme='outline' size='16' />,
+        label: '知识空间',
+        variant: 'muted',
+        meta: selectedKbIds.length > 0 ? `已选 ${selectedKbIds.length}` : undefined,
+        submenu:
+          knowledgeCollections.length > 0
+            ? {
+                title: '关联本地知识空间',
+                multiSelect: true,
+                options: knowledgeCollections.map((col) => ({
+                  key: col.id,
+                  label: col.name,
+                  description: `${col.documentCount} 篇`,
+                  active: selectedKbIds.includes(col.id),
+                })),
+                onSelect: (id) => onToggleKbId(id),
+              }
+            : onOpenKnowledgePage
+              ? {
+                  title: '关联本地知识空间',
+                  selectable: false,
+                  options: [{ key: '__manage_kb', label: '前往管理知识空间 →' }],
+                  onSelect: () => onOpenKnowledgePage(),
+                }
+              : {
+                  title: '关联本地知识空间',
+                  options: [],
+                  emptyText: '暂无本地知识空间，去左侧创建一个吧',
+                  onSelect: () => {},
+                },
       });
     }
 
@@ -422,6 +527,11 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
     mcpServers,
     selectedMcpServerIds,
     onToggleMcpServer,
+    knowledgeCollections,
+    selectedKbIds,
+    onToggleKbId,
+    onOpenKnowledgePage,
+    thinkingPrefs,
     activeSkillCount,
     activeMcpCount,
     isWebUI,
@@ -620,6 +730,69 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             />
           )}
         </div>
+        {!isMobile && onToggleKbId && (
+          <Dropdown
+            trigger='click'
+            popupVisible={isKbDropdownOpen}
+            onVisibleChange={setIsKbDropdownOpen}
+            droplist={
+              <Menu style={{ minWidth: 230, maxHeight: 320, overflowY: 'auto' }}>
+                <Menu.Item key='__header' disabled style={{ cursor: 'default', opacity: 0.75, fontSize: 12 }}>
+                  关联本地知识空间 ({selectedKbIds.length})
+                </Menu.Item>
+                {knowledgeCollections.length === 0 ? (
+                  <Menu.Item key='__empty' disabled style={{ fontSize: 12 }}>
+                    暂无本地知识空间，去左侧创建一个吧
+                  </Menu.Item>
+                ) : (
+                  knowledgeCollections.map((col) => {
+                    const checked = selectedKbIds.includes(col.id);
+                    return (
+                      <Menu.Item
+                        key={col.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleKbId(col.id);
+                        }}
+                      >
+                        <div className='flex items-center justify-between gap-10px'>
+                          <span className='text-13px truncate max-w-170px'>
+                            {col.name} ({col.documentCount} 篇)
+                          </span>
+                          <span className='text-12px font-600 text-primary-6'>{checked ? '✓' : ''}</span>
+                        </div>
+                      </Menu.Item>
+                    );
+                  })
+                )}
+                {onOpenKnowledgePage && (
+                  <Menu.Item
+                    key='__manage_kb'
+                    onClick={() => {
+                      setIsKbDropdownOpen(false);
+                      onOpenKnowledgePage();
+                    }}
+                  >
+                    <span className='text-12px text-primary-6'>前往管理知识空间 →</span>
+                  </Menu.Item>
+                )}
+              </Menu>
+            }
+          >
+            <Tooltip
+              content='关联本地知识库（按需检索，不塞满无关上下文）'
+              popupVisible={isKbDropdownOpen ? false : undefined}
+            >
+              <Button
+                type='secondary'
+                shape='circle'
+                icon={<BookOpen theme='outline' size='14' fill={iconColors.primary} />}
+                data-testid='guid-kb-picker-btn'
+                className={selectedKbIds.length > 0 ? '!border-primary-6' : undefined}
+              />
+            </Tooltip>
+          </Dropdown>
+        )}
       </div>
       {isMobile && (
         <MobileActionSheet
@@ -634,6 +807,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
         {!isMobile && configOptionCount > 0 && (
           <div className={styles.actionConfigGroup} data-mobile={isMobile ? 'true' : undefined}>
             {modelSelectorNode}
+            {thinkingTriggerNode}
 
             {showModeSwitch && (
               <AgentModeSelector

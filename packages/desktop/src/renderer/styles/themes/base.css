@@ -135,9 +135,10 @@ body,
 }
 
 /* Custom scrollbar styles */
+/* Use a 12px hit gutter with transparent borders so Windows frameless edge hit-testing (~6-8px) never steals thumb drags. */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 12px;
+  height: 12px;
 }
 
 ::-webkit-scrollbar-track {
@@ -145,17 +146,40 @@ body,
 }
 
 ::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 3px;
-  transition: background 0.3s;
+  background: rgba(0, 0, 0, 0.18);
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-right-width: 4px;
+  border-radius: 999px;
+  min-height: 36px;
+  transition: background-color 0.15s ease, border-width 0.15s ease;
+}
+
+[data-theme='dark'] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.42);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-right-width: 3px;
 }
 
 [data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.46);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: rgba(0, 0, 0, 0.56);
+  background-clip: content-box;
+}
+
+[data-theme='dark'] ::-webkit-scrollbar-thumb:active {
+  background: rgba(255, 255, 255, 0.62);
+  background-clip: content-box;
 }
 
 /* Hide scrollbar while keeping scroll behavior */
@@ -169,9 +193,11 @@ body,
 }
 
 *:hover::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.26);
+  background-clip: content-box;
 }
 
 [data-theme='dark'] *:hover::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.28);
+  background-clip: content-box;
 }

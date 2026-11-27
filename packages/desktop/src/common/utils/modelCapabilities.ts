@@ -17,14 +17,18 @@ import type {
  */
 export const CAPABILITY_PATTERNS: Record<ModelType, RegExp> = {
   text: /gpt|claude|gemini|qwen|llama|mistral|deepseek/i,
-  vision: /4o|claude-3|gemini-.*-pro|gemini-.*-flash|gemini-2\.0|qwen-vl|llava|vision/i,
+  vision: /4o|gpt-4\.1|gpt-5|gpt-6|o[134](?:-|$)|claude-(?:3|4|5|sonnet|opus|haiku)|gemini|grok|deepseek-v4\.1-flash|qwen.*vl|glm-4v|llava|vision/i,
   function_calling: /gpt-4|claude-3|gemini|qwen|deepseek/i,
   image_generation: /flux|diffusion|stabilityai|sd-|dall|cogview|janus|midjourney|mj-|imagen|gpt-image|nano-banana|grok-imagine-image|-image(?:$|-)/i,
   web_search: /search|perplexity/i,
   reasoning: /o1-|reasoning|think/i,
   embedding: /(?:^text-|embed|bge-|e5-|LLM2Vec|retrieval|uae-|gte-|jina-clip|jina-embeddings|voyage-)/i,
   rerank: /(?:rerank|re-rank|re-ranker|re-ranking|retrieval|retriever)/i,
-  excludeFromPrimary: /dall-e|flux|stable-diffusion|midjourney|flash-image|image|video|embed|rerank/i,
+  // Media/utility models must never appear in the primary chat model picker —
+  // they belong in Settings > Tools (image generation) or the media skills only.
+  // `banana` catches gemini-nano-banana-*; `imagine` catches grok-imagine-*;
+  // `image` catches gpt-image-*, *-image, flash-image, etc.
+  excludeFromPrimary: /dall-e|flux|stable-diffusion|midjourney|flash-image|image|video|embed|rerank|banana|imagine|imagen|cogview|janus|mj-|diffusion|tts|whisper/i,
 };
 
 /**
@@ -32,7 +36,7 @@ export const CAPABILITY_PATTERNS: Record<ModelType, RegExp> = {
  */
 export const CAPABILITY_EXCLUSIONS: Record<ModelType, RegExp[]> = {
   text: [],
-  vision: [/embed|rerank|dall-e|flux|stable-diffusion/i],
+  vision: [/embed|rerank|dall-e|flux|stable-diffusion|midjourney|imagen|gpt-image|nano-banana|-image(?:$|-)|video|tts|whisper|audio/i],
   function_calling: [
     /aqa(?:-[\w-]+)?/i,
     /imagen(?:-[\w-]+)?/i,
@@ -112,4 +116,35 @@ export const hasSpecificModelCapability = (
   if (isExcluded) return false;
 
   return pattern.test(baseModelName) ? true : undefined;
+};
+
+/**
+ * Determine whether a chat model name should default to multimodal image input (`supported`).
+ */
+export const isLikelyVisionChatModel = (modelName: string): boolean => {
+  const baseModelName = getBaseModelName(modelName);
+  if (!baseModelName) return false;
+  if (CAPABILITY_EXCLUSIONS.vision.some((excludePattern) => excludePattern.test(baseModelName))) {
+    return false;
+  }
+  return CAPABILITY_PATTERNS.vision.test(baseModelName);
+};
+
+/**
+ * When adding new models with imageInput set to 'auto', pre-populate `{ image_input: 'supported' }`
+ * for models recognized by `isLikelyVisionChatModel` so renamed custom aliases work out of the box.
+ */
+export const withAutoVisionModelSettings = (
+  settings: Record<string, ModelSettings>,
+  modelIds: string[],
+  imageInputChoice: ModelImageInputChoice
+): Record<string, ModelSettings> => {
+  if (imageInputChoice !== 'auto') return settings;
+  const next = { ...settings };
+  for (const modelId of modelIds) {
+    if (isLikelyVisionChatModel(modelId) && !next[modelId]?.image_input) {
+      next[modelId] = { ...next[modelId], image_input: 'supported' };
+    }
+  }
+  return next;
 };

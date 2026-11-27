@@ -7,9 +7,16 @@
 import { ipcBridge } from '@/common';
 import { buildGuidSlashCommands } from '@/common/chat/slash/guidSlashCommands';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
-import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type TProviderWithModel } from '@/common/config/storage';
+import {
+  BUILTIN_IMAGE_GEN_NAME,
+  BUILTIN_KNOWLEDGE_MCP_NAME,
+  type IMcpServer,
+  type TProviderWithModel,
+} from '@/common/config/storage';
 import { resolveLocaleKey } from '@/common/utils';
 import type { AssistantDetail } from '@/common/types/agent/assistantTypes';
+import type { KnowledgeCollection } from '@/common/types/knowledge';
+import { ThinkingEffortTrigger } from '@/renderer/components/agent/ThinkingEffortSlider';
 
 import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import { appendPromptToDraft } from '@/renderer/hooks/chat/useSendBoxDraft';
@@ -34,8 +41,8 @@ import { chatFileRefPath, uploadFileRef } from '@/common/types/chatFile';
 import { useOpenFileSelector } from '@/renderer/hooks/file/useOpenFileSelector';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { useLiveTranscriptInsertion } from '@/renderer/hooks/system/useLiveTranscriptInsertion';
-import { ArrowRightUp } from '@icon-park/react';
-import { Button, ConfigProvider } from '@arco-design/web-react';
+import { ArrowRightUp, BookOpen } from '@icon-park/react';
+import { Button, ConfigProvider, Tag } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -81,6 +88,15 @@ const GuidPage: React.FC = () => {
   const [guidEnabledSkills, setGuidEnabledSkills] = useState<string[] | undefined>(undefined);
   const [availableMcpServers, setAvailableMcpServers] = useState<IMcpServer[]>([]);
   const [guidSelectedMcpServerIds, setGuidSelectedMcpServerIds] = useState<string[] | undefined>(undefined);
+  const [selectedKbIds, setSelectedKbIds] = useState<string[]>([]);
+  const { data: knowledgeCollections = [] } = useSWR<KnowledgeCollection[]>(
+    'knowledge:collections',
+    () => ipcBridge.knowledge.listCollections.invoke().catch((): KnowledgeCollection[] => []),
+    { revalidateOnFocus: true }
+  );
+  const handleToggleKbId = useCallback((id: string) => {
+    setSelectedKbIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  }, []);
   const selectedAssistantIdRef = useRef<string | null>(null);
   const manualSkillToggleAssistantRef = useRef<string | null>(null);
   const manualMcpToggleAssistantRef = useRef<string | null>(null);
@@ -89,8 +105,16 @@ const GuidPage: React.FC = () => {
     () => allSkills.some((s) => s.name === 'ethantoken-media'),
     [allSkills]
   );
+  const hasEthanTokenKnowledgeSkill = useMemo(
+    () => allSkills.some((s) => s.name === 'ethantoken-knowledge-curator'),
+    [allSkills]
+  );
   const enabledBuiltinImageGenServerId = useMemo(
     () => availableMcpServers.find((s) => s.name === BUILTIN_IMAGE_GEN_NAME && s.enabled)?.id,
+    [availableMcpServers]
+  );
+  const enabledBuiltinKnowledgeServerId = useMemo(
+    () => availableMcpServers.find((s) => s.name === BUILTIN_KNOWLEDGE_MCP_NAME && s.enabled)?.id,
     [availableMcpServers]
   );
 
@@ -285,6 +309,8 @@ const GuidPage: React.FC = () => {
     availableMcpServers,
     selectedMcpServerIds: guidSelectedMcpServerIds,
     assistantDefaultMcpIds: resolvedAssistantDefaults.mcpIds,
+    selectedKbIds,
+    knowledgeCollections,
     isGoogleAuth: modelSelection.isGoogleAuth,
 
     // Mention state reset
@@ -371,17 +397,20 @@ const GuidPage: React.FC = () => {
 
     const resolvedDefaults = resolveGuidAssistantDefaults(selectedAssistantDetail);
     setGuidDisabledBuiltinSkills(resolvedDefaults.disabledBuiltinSkillIds);
-    const shouldAutoIncludeMediaSkill =
-      hasEthanTokenMediaSkill &&
+    const autoBuiltinSkills: string[] = [];
+    if (hasEthanTokenMediaSkill) autoBuiltinSkills.push('ethantoken-media');
+    if (hasEthanTokenKnowledgeSkill) autoBuiltinSkills.push('ethantoken-knowledge-curator');
+    const shouldAutoIncludeBuiltinSkills =
+      autoBuiltinSkills.length > 0 &&
       manualSkillToggleAssistantRef.current !== selectedAssistantId &&
       (selectedAssistantDetail.source === 'builtin' ||
         (selectedAssistantDetail.defaults.skills.mode !== 'fixed' && resolvedDefaults.skillIds.length === 0));
     setGuidEnabledSkills(
-      shouldAutoIncludeMediaSkill
-        ? Array.from(new Set([...resolvedDefaults.skillIds, 'ethantoken-media']))
+      shouldAutoIncludeBuiltinSkills
+        ? Array.from(new Set([...resolvedDefaults.skillIds, ...autoBuiltinSkills]))
         : resolvedDefaults.skillIds
     );
-  }, [hasEthanTokenMediaSkill, selectedAssistantDetail, selectedAssistantId]);
+  }, [hasEthanTokenKnowledgeSkill, hasEthanTokenMediaSkill, selectedAssistantDetail, selectedAssistantId]);
 
   const appliedAssistantDefaultsKeyRef = useRef<string | null>(null);
   const manualModelSelectionAssistantRef = useRef<string | null>(null);
@@ -479,13 +508,16 @@ const GuidPage: React.FC = () => {
           agentSelection.setSelectedThoughtLevelValue(fallbackThoughtLevel, { persistPreference: false });
         }
       }
-      const shouldAutoIncludeImageMcp =
-        Boolean(enabledBuiltinImageGenServerId) &&
+      const autoMcpIds = [enabledBuiltinImageGenServerId, enabledBuiltinKnowledgeServerId].filter(
+        (id): id is string => Boolean(id)
+      );
+      const shouldAutoIncludeBuiltinMcps =
+        autoMcpIds.length > 0 &&
         manualMcpToggleAssistantRef.current !== selectedAssistantId &&
         (selectedAssistantDetail.source === 'builtin' || resolvedDefaults.mcpIds.length === 0);
       setGuidSelectedMcpServerIds(
-        shouldAutoIncludeImageMcp && enabledBuiltinImageGenServerId
-          ? Array.from(new Set([...resolvedDefaults.mcpIds, enabledBuiltinImageGenServerId]))
+        shouldAutoIncludeBuiltinMcps
+          ? Array.from(new Set([...resolvedDefaults.mcpIds, ...autoMcpIds]))
           : resolvedDefaults.mcpIds
       );
     };
@@ -502,6 +534,7 @@ const GuidPage: React.FC = () => {
     agentSelection.setSelectedMode,
     agentSelection.setSelectedThoughtLevelValue,
     enabledBuiltinImageGenServerId,
+    enabledBuiltinKnowledgeServerId,
     modelSelection.modelList,
     modelSelection.resetCurrentModel,
     modelSelection.setCurrentModel,
@@ -509,11 +542,14 @@ const GuidPage: React.FC = () => {
     selectedAssistantDetail,
   ]);
 
-  // Also backfill ethantoken-media & image-gen MCP if async catalogs finish loading after defaults ran
+  // Also backfill ethantoken-media, ethantoken-knowledge-curator & builtin MCPs if async catalogs finish loading after defaults ran
   useEffect(() => {
     if (!selectedAssistantId || !selectedAssistantDetail) return;
+    const autoBuiltinSkills: string[] = [];
+    if (hasEthanTokenMediaSkill) autoBuiltinSkills.push('ethantoken-media');
+    if (hasEthanTokenKnowledgeSkill) autoBuiltinSkills.push('ethantoken-knowledge-curator');
     if (
-      hasEthanTokenMediaSkill &&
+      autoBuiltinSkills.length > 0 &&
       manualSkillToggleAssistantRef.current !== selectedAssistantId &&
       (selectedAssistantDetail.source === 'builtin' ||
         (selectedAssistantDetail.defaults.skills.mode !== 'fixed' &&
@@ -521,21 +557,31 @@ const GuidPage: React.FC = () => {
     ) {
       setGuidEnabledSkills((prev) => {
         const list = prev ?? [];
-        return list.includes('ethantoken-media') ? list : [...list, 'ethantoken-media'];
+        return Array.from(new Set([...list, ...autoBuiltinSkills]));
       });
     }
+    const autoMcpIds = [enabledBuiltinImageGenServerId, enabledBuiltinKnowledgeServerId].filter(
+      (id): id is string => Boolean(id)
+    );
     if (
-      enabledBuiltinImageGenServerId &&
+      autoMcpIds.length > 0 &&
       manualMcpToggleAssistantRef.current !== selectedAssistantId &&
       (selectedAssistantDetail.source === 'builtin' ||
         (selectedAssistantDetail.defaults.mcps.value?.length ?? 0) === 0)
     ) {
       setGuidSelectedMcpServerIds((prev) => {
         const list = prev ?? [];
-        return list.includes(enabledBuiltinImageGenServerId) ? list : [...list, enabledBuiltinImageGenServerId];
+        return Array.from(new Set([...list, ...autoMcpIds]));
       });
     }
-  }, [enabledBuiltinImageGenServerId, hasEthanTokenMediaSkill, selectedAssistantDetail, selectedAssistantId]);
+  }, [
+    enabledBuiltinImageGenServerId,
+    enabledBuiltinKnowledgeServerId,
+    hasEthanTokenKnowledgeSkill,
+    hasEthanTokenMediaSkill,
+    selectedAssistantDetail,
+    selectedAssistantId,
+  ]);
 
   const setGuidSelectedMode = useCallback(
     (mode: React.SetStateAction<string>) => {
@@ -673,6 +719,50 @@ const GuidPage: React.FC = () => {
   );
   const { handleLiveTranscript } = useLiveTranscriptInsertion(guidInput.setInput);
 
+  const thinkingTriggerNode = (
+    <ThinkingEffortTrigger
+      runtimeOption={
+        !isGeminiMode && agentSelection.currentThoughtLevelOption
+          ? {
+              id: 'thought_level',
+              currentValue:
+                agentSelection.selectedThoughtLevelValue ||
+                agentSelection.currentThoughtLevelOption.currentValue ||
+                null,
+              options: agentSelection.currentThoughtLevelOption.options,
+            }
+          : null
+      }
+      onSetRuntimeOption={async (_optionId, val) => {
+        setGuidSelectedThoughtLevel(val);
+      }}
+      modelName={isGeminiMode ? modelSelection.current_model?.use_model : undefined}
+    />
+  );
+
+  const selectedKnowledgeChipsNode =
+    selectedKbIds.length > 0 ? (
+      <div className='flex flex-wrap items-center gap-6px mt-8px mb-6px'>
+        {selectedKbIds.map((kbId) => {
+          const kb = knowledgeCollections.find((c) => c.id === kbId);
+          return (
+            <Tag
+              key={kbId}
+              closable
+              color='arcoblue'
+              onClose={() => handleToggleKbId(kbId)}
+              className='!rounded-full !text-12px'
+            >
+              <span className='inline-flex items-center gap-4px'>
+                <BookOpen theme='outline' size='12' />
+                <span>{kb ? kb.name : kbId}</span>
+              </span>
+            </Tag>
+          );
+        })}
+      </div>
+    ) : undefined;
+
   // Build the action row
   const actionRowNode = (
     <GuidActionRow
@@ -700,6 +790,11 @@ const GuidPage: React.FC = () => {
       mcpServers={availableMcpServers}
       selectedMcpServerIds={guidSelectedMcpServerIds ?? []}
       onToggleMcpServer={handleToggleMcpServer}
+      thinkingTriggerNode={thinkingTriggerNode}
+      knowledgeCollections={knowledgeCollections}
+      selectedKbIds={selectedKbIds}
+      onToggleKbId={handleToggleKbId}
+      onOpenKnowledgePage={() => void navigate('/knowledge')}
       speechInputNode={
         <SpeechInputButton onLiveTranscript={handleLiveTranscript} onTranscript={handleSpeechTranscript} />
       }
@@ -758,6 +853,7 @@ const GuidPage: React.FC = () => {
             dragHandlers={guidInput.dragHandlers}
             files={displayFilePaths}
             onRemoveFile={guidInput.handleRemoveFile}
+            selectedKnowledgeChips={selectedKnowledgeChipsNode}
             actionRow={actionRowNode}
             slashCommandMenu={slashCommandMenuNode}
             workspaceDir={guidInput.dir}

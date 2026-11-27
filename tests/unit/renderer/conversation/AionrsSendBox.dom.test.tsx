@@ -123,6 +123,7 @@ vi.mock('@/renderer/components/chat/SendBox', () => ({
 }));
 
 vi.mock('@/renderer/components/agent/AgentModeSelector', () => ({ default: () => null }));
+vi.mock('@/renderer/components/agent/ThinkingEffortSlider', () => ({ ThinkingEffortTrigger: () => null }));
 vi.mock('@/renderer/components/chat/CommandQueuePanel', () => ({ default: () => null }));
 vi.mock('@/renderer/components/chat/MobileActionSheet', () => ({
   default: () => null,
@@ -430,29 +431,33 @@ describe('AionrsSendBox', () => {
   });
 
   describe('mid-turn interjection controls', () => {
-    it('disables the send button and blocks Enter with a toast while replying, without implicitly enqueuing', async () => {
+    it('keeps the send button enabled while replying and silently auto-queues into the draft box with autoSend', async () => {
       runtimeViewIsProcessingRef.current = true;
       draftContentRef.current = 'hello world';
+      enqueueMock.mockReturnValueOnce({ id: 'q-auto-1', input: 'Hello', files: [], created_at: 1 });
 
       render(<AionrsSendBox conversation_id='conv-1' modelSelection={modelSelection} />);
       await waitFor(() => expect(ensureConversationRuntimeMock).toHaveBeenCalledWith('conv-1'));
 
       const props = sendBoxPropsSpy.mock.calls.at(-1)?.[0] as { sendDisabled?: boolean };
-      expect(props.sendDisabled).toBe(true);
+      expect(props.sendDisabled).toBe(false);
 
       await act(async () => {
         screen.getByRole('button', { name: 'send' }).click();
       });
 
       expect(sendMessageInvokeMock).not.toHaveBeenCalled();
-      expect(enqueueMock).not.toHaveBeenCalled();
-      expect(clearFilesMock).not.toHaveBeenCalled();
-      expect(Message.warning).toHaveBeenCalledWith(
-        'This agent is still working, so the message can’t be sent directly. Save it to Draft box and send it later.'
-      );
+      expect(enqueueMock).toHaveBeenCalledWith({
+        input: 'Hello',
+        files: [],
+        sessions: undefined,
+        autoSend: true,
+      });
+      expect(clearFilesMock).toHaveBeenCalledTimes(1);
+      expect(Message.warning).not.toHaveBeenCalled();
     });
 
-    it('sends normally while idle', async () => {
+    it('sends normally while idle without injecting thinking prompt text', async () => {
       runtimeViewIsProcessingRef.current = false;
 
       render(<AionrsSendBox conversation_id='conv-1' modelSelection={modelSelection} />);
@@ -468,6 +473,12 @@ describe('AionrsSendBox', () => {
       await waitFor(() => {
         expect(sendMessageInvokeMock).toHaveBeenCalledTimes(1);
       });
+      expect(sendMessageInvokeMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: 'Hello',
+          conversation_id: 'conv-1',
+        })
+      );
       expect(enqueueMock).not.toHaveBeenCalled();
       expect(Message.warning).not.toHaveBeenCalled();
     });

@@ -824,11 +824,12 @@ describe('AcpSendBox', () => {
       expect(props.addToDraftDisabled).toBe(true);
     });
 
-    it('disables the send button and blocks Enter with a toast for a non-supporting agent while replying, without implicitly enqueuing', async () => {
+    it('keeps the send button enabled for a non-supporting agent while replying and silently auto-queues with autoSend', async () => {
       runtimeViewMock.supportsMidturnDelivery = false;
       runtimeViewMock.isProcessing = true;
       runtimeViewMock.canSendMessage = true;
       draftContentRef.current = 'hello world';
+      enqueueMock.mockReturnValueOnce({ id: 'q-auto-1', input: 'Hello', files: [], created_at: 1 });
 
       render(
         <AcpSendBox
@@ -840,18 +841,21 @@ describe('AcpSendBox', () => {
       );
 
       const props = sendBoxPropsSpy.mock.calls.at(-1)?.[0] as { sendDisabled?: boolean };
-      expect(props.sendDisabled).toBe(true);
+      expect(props.sendDisabled).toBe(false);
 
       await act(async () => {
         screen.getByRole('button', { name: 'send' }).click();
       });
 
       expect(sendMessageInvokeMock).not.toHaveBeenCalled();
-      expect(enqueueMock).not.toHaveBeenCalled();
-      expect(clearFilesMock).not.toHaveBeenCalled();
-      expect(messageWarningMock).toHaveBeenCalledWith(
-        'This agent is still working, so the message can’t be sent directly. Save it to Draft box and send it later.'
-      );
+      expect(enqueueMock).toHaveBeenCalledWith({
+        input: 'Hello',
+        files: [],
+        sessions: undefined,
+        autoSend: true,
+      });
+      expect(clearFilesMock).toHaveBeenCalledTimes(1);
+      expect(messageWarningMock).not.toHaveBeenCalled();
     });
 
     it('sends normally for a non-supporting agent while idle', async () => {

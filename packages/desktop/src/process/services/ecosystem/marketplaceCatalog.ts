@@ -18,14 +18,19 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
     category: '开发文档',
     source: 'curated',
     author: 'upstash',
-    version: '1.0.14',
     transport: {
       type: 'stdio',
       command: 'npx',
-      args: ['-y', '@upstash/context7-mcp@latest'],
+      args: ['-y', '@upstash/context7-mcp'],
       env: {},
     },
     repositoryUrl: 'https://github.com/upstash/context7',
+    usageGuide:
+      '安装并启用后，模型会自动调用 `resolve-library-id` 与 `query-docs` 拉取 React、Next.js、Arco Design、FastAPI 等开源库最新文档，无需手动翻网页。',
+    examplePrompts: [
+      '请使用 context7 查询 Electron 35 BrowserWindow 的最新透明窗口配置',
+      '帮我用 context7 查一下 TanStack Router v1 的类型安全路由写法',
+    ],
   },
   {
     id: 'curated:sequential-thinking',
@@ -42,6 +47,12 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
       env: {},
     },
     repositoryUrl: 'https://github.com/modelcontextprotocol/servers',
+    usageGuide:
+      '零配置即装即用。提供 `sequentialthinking` 工具，帮助模型在复杂排错、架构取舍和多约束方案设计时显式拆解并修正推理分支。',
+    examplePrompts: [
+      '先用 sequential-thinking 分析这个多进程竞态 Bug 的所有可能触发链路',
+      '使用分步推理对比 SQLite WAL 与 DuckDB 在桌面端并发写入的利弊',
+    ],
   },
   {
     id: 'curated:playwright',
@@ -58,6 +69,12 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
       env: {},
     },
     repositoryUrl: 'https://github.com/microsoft/playwright-mcp',
+    usageGuide:
+      '提供结构化无障碍树快照与点击/输入/截图工具，适合前端 E2E 回归验证、登录态调试与动态页面检查。首次运行会自动拉取或复用本机浏览器。',
+    examplePrompts: [
+      '用 Playwright 打开 http://localhost:5173，点击登录并截图检查控制台报错',
+      '验证表单在空输入提交时是否正确展示校验提示',
+    ],
   },
   {
     id: 'curated:fetch',
@@ -74,6 +91,12 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
       env: {},
     },
     repositoryUrl: 'https://github.com/modelcontextprotocol/servers',
+    usageGuide:
+      '基于 Python `uvx` 零全局污染运行（若上方状态栏提示未安装 uv，点一次“一键安装 uv”即可）。适合快速读取文档页、Release Notes 或文章正文。',
+    examplePrompts: [
+      '抓取 https://react.dev/blog 的最新更新摘要',
+      '读取指定网页的正文并整理成中文技术要点',
+    ],
   },
   {
     id: 'curated:memory',
@@ -90,6 +113,12 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
       env: {},
     },
     repositoryUrl: 'https://github.com/modelcontextprotocol/servers',
+    usageGuide:
+      '将实体（人物、项目、偏好）和关系持久化在本地 JSONL 图谱中，适合跨会话记住项目术语、成员分工与长期约定。',
+    examplePrompts: [
+      '记住我们的桌面端打包分支是 feat/ethantoken-mvp，发布前必须跑 tsc 与 vitest',
+      '查询记忆图谱中关于部署流程的所有记录',
+    ],
   },
   {
     id: 'curated:filesystem',
@@ -117,6 +146,12 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
       },
     ],
     repositoryUrl: 'https://github.com/modelcontextprotocol/servers',
+    usageGuide:
+      '出于安全隔离考虑，仅允许读写“允许访问的根目录路径”配置项内的文件。建议将根目录收窄到你的常用代码库或文档文件夹。',
+    examplePrompts: [
+      '扫描授权目录下的 README.md 与 package.json，总结项目技术栈',
+      '对比两个配置文件夹的差异并生成迁移报告',
+    ],
   },
   {
     id: 'curated:github',
@@ -143,6 +178,12 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
       },
     ],
     repositoryUrl: 'https://github.com/github/github-mcp-server',
+    usageGuide:
+      '填入 `GITHUB_PERSONAL_ACCESS_TOKEN` 后，即可让助手直接查询仓库 Issue、读取 PR diff、创建分支或检索跨仓库代码。',
+    examplePrompts: [
+      '列出仓库最近 5 条 open Issue 并按优先级归类',
+      '帮我审查指定 PR 的改动文件与潜在边界问题',
+    ],
   },
   {
     id: 'curated:tavily',
@@ -169,6 +210,12 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
       },
     ],
     repositoryUrl: 'https://github.com/tavily-ai/tavily-mcp',
+    usageGuide:
+      '配置 Tavily API Key（每月有免费额度）即可启用 `tavily-search` 与 `tavily-extract`，返回经过降噪排序的 AI 检索结果与引用链接。',
+    examplePrompts: [
+      '搜索 2026 年 Windows MSIX 代码签名最新费用与政策变化',
+      '汇总官方关于 Electron 35 升级的破坏性变更',
+    ],
   },
   {
     id: 'curated:firecrawl',
@@ -195,6 +242,11 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
       },
     ],
     repositoryUrl: 'https://github.com/firecrawl/firecrawl-mcp-server',
+    usageGuide:
+      '需要填入 `FIRECRAWL_API_KEY`。适合对需要 JS 渲染的站点进行整站 URL Map、批量 Crawl 和结构化 JSON 抽取。',
+    examplePrompts: [
+      '抓取某个产品文档站的完整目录并提取核心 API 参数表',
+    ],
   },
   {
     id: 'curated:amap-maps',
@@ -219,6 +271,11 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
         secret: true,
         target: 'env',
       },
+    ],
+    usageGuide:
+      '需在高德开放平台申请“Web服务”类型的 Key 并在此填写，适合国内差旅规划、地址解析与实时天气查询。',
+    examplePrompts: [
+      '帮我规划从虹桥火车站到陆家嘴的地铁耗时与周边咖啡店推荐',
     ],
   },
   {
@@ -247,6 +304,11 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
       },
     ],
     repositoryUrl: 'https://github.com/modelcontextprotocol/servers-archived',
+    usageGuide:
+      '基于 Python `uvx` 运行。填写本机 `.db` / `.sqlite` 文件绝对路径后，助手可直接查看表 Schema 并执行 SQL 统计查询。',
+    examplePrompts: [
+      '查看这个 SQLite 数据库的所有表结构，并统计近 7 天活跃记录数',
+    ],
   },
   {
     id: 'curated:postgres',
@@ -274,6 +336,11 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
       },
     ],
     repositoryUrl: 'https://github.com/modelcontextprotocol/servers-archived',
+    usageGuide:
+      '配置只读数据库账号的 PostgreSQL 连接串后，即可在对话中自然语言查表、排查慢 SQL 关联字段。',
+    examplePrompts: [
+      '分析 users 表与 orders 表的外键关系并统计本月新增订单分布',
+    ],
   },
   {
     id: 'curated:puppeteer',
@@ -290,6 +357,11 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
       env: {},
     },
     repositoryUrl: 'https://github.com/modelcontextprotocol/servers-archived',
+    usageGuide:
+      '即装即用。提供打开网页、注入 JS 读取 DOM 与截图工具；若需更强稳定性推荐同时体验 Playwright MCP。',
+    examplePrompts: [
+      '用 Puppeteer 打开本地预览页并检查首屏渲染内容',
+    ],
   },
   {
     id: 'curated:brave-search',
@@ -316,6 +388,11 @@ export const CURATED_MCP_CATALOG: CuratedMcpSeed[] = [
       },
     ],
     repositoryUrl: 'https://github.com/brave/brave-search-mcp-server',
+    usageGuide:
+      '配置 Brave Search API Key 后，适合快速检索英文技术文档、海外资讯与开源社区讨论。',
+    examplePrompts: [
+      '用 Brave Search 查找最新 Node.js 24 LTS 的安全更新说明',
+    ],
   },
 ];
 
@@ -331,6 +408,8 @@ export const CURATED_SKILL_CATALOG: CuratedSkillSeed[] = [
     repositoryUrl: 'https://github.com/anthropics/skills',
     skillId: 'frontend-design',
     rawPath: 'skills/frontend-design/SKILL.md',
+    usageGuide: '安装后已默认挂载到全部助手。当你让助手搭建落地页、控制台 UI 或交互组件时，会自动应用这套视觉与排版准则。',
+    examplePrompts: ['用 frontend-design 规范帮我设计一个极简科技感的监控仪表盘界面'],
   },
   {
     id: 'curated:pdf',
@@ -343,6 +422,8 @@ export const CURATED_SKILL_CATALOG: CuratedSkillSeed[] = [
     repositoryUrl: 'https://github.com/anthropics/skills',
     skillId: 'pdf',
     rawPath: 'skills/pdf/SKILL.md',
+    usageGuide: '安装后即可让助手编写并执行 Python/Node PDF 处理脚本，完成 OCR/表格提取、PDF 合并拆页与报告生成。',
+    examplePrompts: ['把这个文件夹里的几份报价单 PDF 提取成统一表格并汇总'],
   },
   {
     id: 'curated:docx',
@@ -355,6 +436,8 @@ export const CURATED_SKILL_CATALOG: CuratedSkillSeed[] = [
     repositoryUrl: 'https://github.com/anthropics/skills',
     skillId: 'docx',
     rawPath: 'skills/docx/SKILL.md',
+    usageGuide: '适用于生成结构规范的 `.docx` 报告、标书、技术方案及读取含修订批注的 Word 文件。',
+    examplePrompts: ['根据这份项目纪要生成一份带标题样式与目录的标准 Word 方案'],
   },
   {
     id: 'curated:pptx',
@@ -367,6 +450,8 @@ export const CURATED_SKILL_CATALOG: CuratedSkillSeed[] = [
     repositoryUrl: 'https://github.com/anthropics/skills',
     skillId: 'pptx',
     rawPath: 'skills/pptx/SKILL.md',
+    usageGuide: '指导助手通过 `python-pptx` / `pptxgenjs` 构建不重叠、信息密度适中的专业汇报幻灯片。',
+    examplePrompts: ['把这份季度复盘总结转换成 8 页清晰的技术汇报 PPT'],
   },
   {
     id: 'curated:xlsx',
@@ -379,6 +464,8 @@ export const CURATED_SKILL_CATALOG: CuratedSkillSeed[] = [
     repositoryUrl: 'https://github.com/anthropics/skills',
     skillId: 'xlsx',
     rawPath: 'skills/xlsx/SKILL.md',
+    usageGuide: '指导助手保留动态 Excel 公式（而非死算固定数字）、统一千分位/日期格式并自动调整列宽。',
+    examplePrompts: ['清洗这份销售 CSV 并导出带汇总公式和条件格式的 xlsx 报表'],
   },
   {
     id: 'curated:mcp-builder',
@@ -391,6 +478,8 @@ export const CURATED_SKILL_CATALOG: CuratedSkillSeed[] = [
     repositoryUrl: 'https://github.com/anthropics/skills',
     skillId: 'mcp-builder',
     rawPath: 'skills/mcp-builder/SKILL.md',
+    usageGuide: '当你需要将内部 API 或工业设备控制封装为 MCP Server 时，让助手参照此技能完成 Tool Schema 设计与错误处理。',
+    examplePrompts: ['帮我用 TypeScript 设计一个对接公司内部工单系统的 MCP Server'],
   },
   {
     id: 'curated:webapp-testing',
@@ -403,6 +492,8 @@ export const CURATED_SKILL_CATALOG: CuratedSkillSeed[] = [
     repositoryUrl: 'https://github.com/anthropics/skills',
     skillId: 'webapp-testing',
     rawPath: 'skills/webapp-testing/SKILL.md',
+    usageGuide: '规范本地开发服务器起停、控制台日志抓取与截图断言，避免测试脚手架遗留僵尸进程。',
+    examplePrompts: ['对当前 Web 应用写一套 Playwright 端到端冒烟测试并跑通验证'],
   },
   {
     id: 'curated:skill-creator',
@@ -415,6 +506,8 @@ export const CURATED_SKILL_CATALOG: CuratedSkillSeed[] = [
     repositoryUrl: 'https://github.com/anthropics/skills',
     skillId: 'skill-creator',
     rawPath: 'skills/skill-creator/SKILL.md',
+    usageGuide: '帮助你把个人常用工作流、内部规范或提示词模板沉淀为高命中率的 `SKILL.md` 技能包。',
+    examplePrompts: ['帮我把这套代码审查清单整理成一个规范的 SKILL.md'],
   },
   {
     id: 'curated:systematic-debugging',
@@ -427,6 +520,8 @@ export const CURATED_SKILL_CATALOG: CuratedSkillSeed[] = [
     repositoryUrl: 'https://github.com/obra/superpowers',
     skillId: 'systematic-debugging',
     rawPath: 'skills/systematic-debugging/SKILL.md',
+    usageGuide: '约束助手严格执行“精准复现 -> 日志/断点取证 -> 根因隔离 -> 最小修复 -> 回归验证”五步法。',
+    examplePrompts: ['请按 systematic-debugging 流程排查这个偶发连接超时故障的真正根因'],
   },
   {
     id: 'curated:brainstorming',
@@ -439,6 +534,8 @@ export const CURATED_SKILL_CATALOG: CuratedSkillSeed[] = [
     repositoryUrl: 'https://github.com/obra/superpowers',
     skillId: 'brainstorming',
     rawPath: 'skills/brainstorming/SKILL.md',
+    usageGuide: '在动手写代码前先对齐目标、拆解约束条件与技术选型利弊，减少返工。',
+    examplePrompts: ['我想给客户端加一个快捷浮窗对话功能，先用 brainstorming 对齐方案设计'],
   },
   {
     id: 'curated:writing-plans',
@@ -451,6 +548,8 @@ export const CURATED_SKILL_CATALOG: CuratedSkillSeed[] = [
     repositoryUrl: 'https://github.com/obra/superpowers',
     skillId: 'writing-plans',
     rawPath: 'skills/writing-plans/SKILL.md',
+    usageGuide: '适合较大需求开发前，将任务拆分到具体文件修改边界、接口签名和可验收测试命令。',
+    examplePrompts: ['给这次架构改造输出一份按里程碑拆分的工程实施计划'],
   },
   {
     id: 'curated:test-driven-development',
@@ -463,5 +562,7 @@ export const CURATED_SKILL_CATALOG: CuratedSkillSeed[] = [
     repositoryUrl: 'https://github.com/obra/superpowers',
     skillId: 'test-driven-development',
     rawPath: 'skills/test-driven-development/SKILL.md',
+    usageGuide: '督促助手先编写失败复现用例再写修复代码，并在最终宣称完成前确保单测全绿。',
+    examplePrompts: ['用 TDD 方式为这个价格计算模块补齐边界测试并修复四舍五入偏差'],
   },
 ];

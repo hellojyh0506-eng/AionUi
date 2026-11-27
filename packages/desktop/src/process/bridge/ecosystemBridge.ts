@@ -20,6 +20,7 @@ import {
 import {
   checkMarketplaceUpdates,
   downloadSkillMarkdownFromGitHub,
+  getPluginDetails,
   importSkillMarkdownToBackend,
   installMcpItemToBackend,
   searchMcpMarketplace,
@@ -27,6 +28,7 @@ import {
   syncMarketplaceMetadata,
   updateAllMarketplacePlugins,
 } from '../services/ecosystem/marketplaceService';
+import { inspectRuntimeEnvironment, installManagedUv } from '../services/ecosystem/runtimeEnvironment';
 import type { EcosystemClientId, ScannedRuleItem, ScannedSkillItem } from '../services/ecosystem/types';
 
 interface BackendSkillInfo {
@@ -275,7 +277,7 @@ export function initEcosystemBridge(): void {
 
   ipcBridge.ecosystem.searchMcpMarketplace.provider(async (req) => {
     const { existingMcpNames } = await fetchExistingSkillAndMcpSets();
-    return await searchMcpMarketplace(req?.query || '', existingMcpNames);
+    return await searchMcpMarketplace(req?.query || '', existingMcpNames, fetch, undefined, req?.cursor);
   });
 
   ipcBridge.ecosystem.installMcpFromMarketplace.provider(async (req) => {
@@ -376,5 +378,24 @@ export function initEcosystemBridge(): void {
 
   ipcBridge.ecosystem.attachToAllAssistants.provider(async (req) => {
     return await attachResourcesToAllAssistants(req);
+  });
+
+  ipcBridge.ecosystem.getPluginDetails.provider(async (req) => {
+    return await getPluginDetails(req, {
+      getUserSkillsDir: async () => {
+        const paths = await httpRequest<{ user_skills_dir?: string }>('GET', '/api/skills/paths').catch(
+          (): undefined => undefined
+        );
+        return paths?.user_skills_dir;
+      },
+    });
+  });
+
+  ipcBridge.ecosystem.getRuntimeStatus.provider(async () => {
+    return await inspectRuntimeEnvironment();
+  });
+
+  ipcBridge.ecosystem.installManagedUv.provider(async () => {
+    return await installManagedUv();
   });
 }

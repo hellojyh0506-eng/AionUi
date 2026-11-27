@@ -1,9 +1,10 @@
 import type { IProvider } from '@/common/config/storage';
 import {
-  type ModelImageInputChoice,
-  type ModelOpenAiApiModeChoice,
   supportsOpenAiApiMode,
   updateModelSettings,
+  withAutoVisionModelSettings,
+  type ModelImageInputChoice,
+  type ModelOpenAiApiModeChoice,
 } from '@/common/utils/modelCapabilities';
 import type { ProtocolDetectionResponse, ProtocolType } from '@/common/utils/protocolDetector';
 import { ipcBridge } from '@/common';
@@ -385,12 +386,16 @@ const AddPlatformModal = ModalHOC<{
           provider.model_protocols = Object.fromEntries(selectedModels.filter(Boolean).map((m) => [m, modelProtocol]));
         }
 
-        const selectedModels: string[] = Array.isArray(values.model) ? values.model : [values.model];
-        provider.model_settings = updateModelSettings(
-          undefined,
-          selectedModels.filter(Boolean),
-          imageInput,
-          showOpenAiApiMode ? openAiApiMode : 'auto'
+        const selectedModels: string[] = (Array.isArray(values.model) ? values.model : [values.model]).filter(Boolean);
+        provider.model_settings = withAutoVisionModelSettings(
+          updateModelSettings(
+            undefined,
+            selectedModels,
+            imageInput,
+            showOpenAiApiMode ? openAiApiMode : 'auto'
+          ),
+          selectedModels,
+          imageInput
         );
 
         onSubmit(provider);

@@ -17,13 +17,10 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import {
   composeRuntimeSelectorLabel,
-  getCurrentThoughtLevelLabel,
-  RUNTIME_SUBMENU_TRIGGER_PROPS,
-  RuntimeSelectorCheckedItem,
   RuntimeSelectorModelList,
   type RuntimeSelectorModelGroup,
-  RuntimeSelectorSubMenuTitle,
 } from '@/renderer/components/agent/runtimeSelectorOptions';
+import { ThinkingEffortSlider } from '@/renderer/components/agent/ThinkingEffortSlider';
 
 type GuidModelSelectorProps = {
   // Gemini model state
@@ -209,50 +206,19 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
           droplist={
             <Menu selectedKeys={selectedAcpModel ? [selectedAcpModel] : []}>
               {normalizedThoughtLevelOption ? (
-                <>
-                  {/* Two-level layout: model row on top, thought-level row below;
-                      each expands into a left-side submenu. */}
-                  <Menu.SubMenu
-                    key='model'
-                    triggerProps={RUNTIME_SUBMENU_TRIGGER_PROPS}
-                    title={
-                      <RuntimeSelectorSubMenuTitle
-                        label={t('common.model', { defaultValue: 'Model' })}
-                        value={acpButtonLabel}
-                      />
-                    }
-                  >
-                    {modelListNode}
-                  </Menu.SubMenu>
-                  <Menu.SubMenu
-                    key='thought-level'
-                    triggerProps={RUNTIME_SUBMENU_TRIGGER_PROPS}
-                    title={
-                      <RuntimeSelectorSubMenuTitle
-                        label={t('agent.thoughtLevel.label')}
-                        value={getCurrentThoughtLevelLabel(normalizedThoughtLevelOption)}
-                      />
-                    }
-                  >
-                    {normalizedThoughtLevelOption.options.map((item) => (
-                      <Menu.Item
-                        key={item.value}
-                        className={item.value === normalizedThoughtLevelOption.currentValue ? '!bg-2' : ''}
-                        onClick={() => onThoughtLevelSelect?.(item.value)}
-                      >
-                        <RuntimeSelectorCheckedItem
-                          selected={item.value === normalizedThoughtLevelOption.currentValue}
-                          description={item.description}
-                        >
-                          {item.label}
-                        </RuntimeSelectorCheckedItem>
-                      </Menu.Item>
-                    ))}
-                  </Menu.SubMenu>
-                </>
-              ) : (
-                modelListNode
-              )}
+                <div
+                  className='px-12px pt-8px pb-10px border-b border-solid border-[var(--color-border-1)]'
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className='text-11.5px font-500 text-t-tertiary mb-6px'>{t('agent.thoughtLevel.label')}</div>
+                  <ThinkingEffortSlider
+                    options={normalizedThoughtLevelOption.options}
+                    value={normalizedThoughtLevelOption.currentValue || normalizedThoughtLevelOption.options[0]?.value || 'auto'}
+                    onChange={(val) => onThoughtLevelSelect?.(val)}
+                  />
+                </div>
+              ) : null}
+              {modelListNode}
             </Menu>
           }
         >

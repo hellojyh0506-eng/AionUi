@@ -206,6 +206,7 @@ asarUnpack:
   # Builtin MCP server scripts must be unpacked so external node processes can execute them
   - 'out/main/builtin-mcp-image-gen.js'
   - 'out/main/builtin-mcp-browser.js'
+  - 'out/main/builtin-mcp-knowledge.js'
   - 'out/main/chrome-devtools-mcp/**/*'
   - 'out/main/team-mcp-stdio.js'
 

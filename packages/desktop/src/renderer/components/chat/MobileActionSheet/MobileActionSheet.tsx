@@ -189,8 +189,11 @@ const MobileActionSheet: React.FC<MobileActionSheetProps> = ({ open, onClose, ti
                 <div className={styles.subtitle}>{renderedSub.title}</div>
               </div>
               <div className={styles.list}>
+                {renderedSub.customContent && (
+                  <div className='px-16px pt-10px pb-6px'>{renderedSub.customContent}</div>
+                )}
                 {renderedSub.options.length === 0 ? (
-                  <div className={styles.empty}>{renderedSub.emptyText}</div>
+                  renderedSub.customContent ? null : <div className={styles.empty}>{renderedSub.emptyText}</div>
                 ) : (
                   renderedSub.options.map((option) => {
                     const showRadio = renderedSub.multiSelect !== true && renderedSub.selectable !== false;

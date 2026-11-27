@@ -7,6 +7,14 @@
 import { ipcBridge } from '@/common';
 import type { IConversationMcpStatus } from '@/common/config/storage';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
+import { ThinkingEffortSlider, ThinkingEffortTrigger } from '@/renderer/components/agent/ThinkingEffortSlider';
+import {
+  getModelThinkingLevel,
+  normalizeThinkingOptions,
+  resolveModelThinkingSpec,
+  setModelThinkingLevel,
+  useThinkingSliderPreferences,
+} from '@/renderer/utils/thinkingEffort';
 import CommandQueuePanel from '@/renderer/components/chat/CommandQueuePanel';
 import MobileActionSheet, {
   type MobileActionSheetEntry,
@@ -187,6 +195,7 @@ const AionrsSendBox: React.FC<{
   });
   const runtimeMode = runtimeConfig.mode;
   const runtimeThoughtLevel = runtimeConfig.thoughtLevel;
+  const thinkingPrefs = useThinkingSliderPreferences();
 
   useEffect(() => {
     if (!runtimeMode?.currentValue) return;
@@ -385,23 +394,23 @@ const AionrsSendBox: React.FC<{
   const [selectedSessions, setSelectedSessions] = useState<SessionRef[]>([]);
   const { enabled: crossSessionEnabled } = useCrossSessionMessageEnabled();
 
-  // aionrs backends never support mid-turn delivery: while the agent is
-  // replying, sending is hard-blocked with a toast instead of implicitly
-  // enqueuing. The only way to queue a message while busy is the explicit
-  // "add to queue" entry (handleAddToQueue below).
+  // While the agent is replying, pressing Enter or clicking Send silently appends
+  // to the Draft queue with auto-send enabled so it drains as soon as the current turn completes.
   const onSendHandler = async (message: string): Promise<void | false> => {
-    if (isBusy) {
-      Message.warning(
-        t('conversation.commandQueue.midturnBlocked', {
-          defaultValue:
-            'This agent is still working, so the message can’t be sent directly. Save it to Draft box and send it later.',
-        })
-      );
-      return false;
-    }
-
     const filesToSend = collectChatFileRefs(uploadFile, atPath);
     const sessions = selectedSessions.length > 0 ? selectedSessions : undefined;
+
+    if (isBusy) {
+      const queued = enqueue({ input: message, files: filesToSend, sessions, autoSend: true });
+      if (!queued) {
+        return false;
+      }
+      clearFiles();
+      setSelectedSessions([]);
+      emitter.emit('aionrs.selected.file.clear');
+      return;
+    }
+
     clearFiles();
     setSelectedSessions([]);
     emitter.emit('aionrs.selected.file.clear');
@@ -576,29 +585,74 @@ const AionrsSendBox: React.FC<{
       ...attachEntries,
     ];
 
-    if (runtimeThoughtLevel) {
+    const modelSpec = !runtimeThoughtLevel ? resolveModelThinkingSpec(current_model?.use_model) : null;
+    if (thinkingPrefs.enabled && runtimeThoughtLevel) {
+      const normalized = normalizeThinkingOptions(runtimeThoughtLevel.options);
+      const currentValue = runtimeThoughtLevel.currentValue || normalized[0]?.value || '';
+      const handleRuntimeThoughtSelect = (value: string) => {
+        void runtimeConfig
+          .setConfigOption(runtimeThoughtLevel.id, value)
+          .then(() => Message.success(t('agent.thoughtLevel.switchSuccess')))
+          .catch((error) => Message.error(t(configErrorMessageKey(error))));
+      };
       entries.splice(1, 0, {
         key: 'thought-level',
         icon: <Brain theme='outline' size='16' />,
-        label: t('agent.thoughtLevel.label'),
-        meta:
-          runtimeThoughtLevel.options.find((item) => item.value === runtimeThoughtLevel.currentValue)?.label ||
-          runtimeThoughtLevel.currentValue ||
-          '',
+        label: t('agent.thoughtLevel.label', { defaultValue: '推理等级' }),
+        meta: normalized.find((item) => item.value === currentValue)?.label || currentValue || '',
         submenu: {
-          title: t('agent.thoughtLevel.label'),
-          options: runtimeThoughtLevel.options.map((item) => ({
+          title: t('agent.thoughtLevel.label', { defaultValue: '推理等级' }),
+          customContent:
+            thinkingPrefs.style === 'codex-slider' ? (
+              <ThinkingEffortSlider
+                fullWidth
+                styleVariant='codex-slider'
+                options={normalized}
+                value={currentValue}
+                onChange={handleRuntimeThoughtSelect}
+              />
+            ) : undefined,
+          options: normalized.map((item) => ({
             key: item.value,
             label: item.label,
             description: item.description ?? undefined,
-            active: runtimeThoughtLevel.currentValue === item.value,
+            active: currentValue === item.value,
           })),
-          onSelect: (value) => {
-            void runtimeConfig
-              .setConfigOption(runtimeThoughtLevel.id, value)
-              .then(() => Message.success(t('agent.thoughtLevel.switchSuccess')))
-              .catch((error) => Message.error(t(configErrorMessageKey(error))));
-          },
+          onSelect: handleRuntimeThoughtSelect,
+        },
+      });
+    } else if (thinkingPrefs.enabled && modelSpec && current_model?.use_model) {
+      const normalized = modelSpec.options;
+      const activeValue = getModelThinkingLevel(thinkingPrefs, current_model.use_model, modelSpec);
+      const handleModelThoughtSelect = (value: string) => {
+        if (current_model?.use_model) {
+          setModelThinkingLevel(current_model.use_model, value);
+        }
+      };
+      entries.splice(1, 0, {
+        key: 'thought-level',
+        icon: <Brain theme='outline' size='16' />,
+        label: t('agent.thoughtLevel.label', { defaultValue: '推理等级' }),
+        meta: normalized.find((item) => item.value === activeValue)?.label || activeValue || '',
+        submenu: {
+          title: t('agent.thoughtLevel.label', { defaultValue: '推理等级' }),
+          customContent:
+            thinkingPrefs.style === 'codex-slider' ? (
+              <ThinkingEffortSlider
+                fullWidth
+                styleVariant='codex-slider'
+                options={normalized}
+                value={activeValue}
+                onChange={handleModelThoughtSelect}
+              />
+            ) : undefined,
+          options: normalized.map((item) => ({
+            key: item.value,
+            label: item.label,
+            description: item.description ?? undefined,
+            active: activeValue === item.value,
+          })),
+          onSelect: handleModelThoughtSelect,
         },
       });
     }
@@ -664,6 +718,7 @@ const AionrsSendBox: React.FC<{
     runtimeMode,
     runtimeThoughtLevel,
     setContent,
+    thinkingPrefs,
     t,
   ]);
 
@@ -770,15 +825,8 @@ const AionrsSendBox: React.FC<{
         active={teamRuntime?.isActive}
         onFocused={teamRuntime?.onFocus}
         disabled={!current_model?.use_model}
-        sendDisabled={isBusy}
-        sendDisabledTooltip={
-          isBusy
-            ? t('conversation.commandQueue.midturnBlockedSendHint', {
-                defaultValue:
-                  'The current agent is still working and cannot receive another message yet. Add it to Draft box instead.',
-              })
-            : undefined
-        }
+        sendDisabled={false}
+        sendTooltip={isBusy ? '加入草稿箱排队发送 · Enter' : undefined}
         placeholder={
           current_model?.use_model
             ? t('acp.sendbox.placeholder', {
@@ -803,6 +851,14 @@ const AionrsSendBox: React.FC<{
         }
         rightTools={
           <div className='flex items-center gap-8px min-w-0'>
+            <ThinkingEffortTrigger
+              runtimeOption={runtimeThoughtLevel}
+              onSetRuntimeOption={async (optionId, value) => {
+                await runtimeConfig.setConfigOption(optionId, value);
+                Message.success(t('agent.thoughtLevel.switchSuccess'));
+              }}
+              modelName={current_model?.use_model}
+            />
             <AgentModeSelector
               backend='aionrs'
               conversation_id={conversation_id}

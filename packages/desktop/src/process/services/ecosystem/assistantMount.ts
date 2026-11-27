@@ -8,6 +8,7 @@ import { httpRequest } from '@/common/adapter/httpBridge';
 import type { IMcpServer, IMcpServerTransport } from '@/common/config/storage';
 import type { Assistant, AssistantDefaultsRequest, AssistantDetail, UpdateAssistantRequest } from '@/common/types/agent/assistantTypes';
 import type { AttachResourcesRequest, AttachResourcesResult } from '@/common/types/ecosystem';
+import { resolveCommandWithManagedRuntime } from './runtimeEnvironment';
 
 type BackendMcpTransport = Exclude<IMcpServerTransport, { type: 'streamable_http' }>;
 
@@ -35,6 +36,12 @@ export function normalizeTransportForBackend(transport: IMcpServerTransport): Ba
       type: 'http',
       url: transport.url,
       headers: transport.headers,
+    };
+  }
+  if (transport.type === 'stdio') {
+    return {
+      ...transport,
+      command: resolveCommandWithManagedRuntime(transport.command),
     };
   }
   return transport;

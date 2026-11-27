@@ -9,6 +9,8 @@
 export const BUILTIN_IMAGE_GEN_ID = 'builtin-image-gen';
 export const BUILTIN_IMAGE_GEN_NAME = 'aionui-image-generation';
 export const BUILTIN_IMAGE_GEN_LEGACY_NAMES = ['AionUi Image Generation', BUILTIN_IMAGE_GEN_ID] as const;
+export const BUILTIN_KNOWLEDGE_MCP_NAME = 'aionui-knowledge-base';
+export const BUILTIN_KNOWLEDGE_SCRIPT = 'builtin-mcp-knowledge';
 
 export function isBuiltinImageGenName(name?: string | null): boolean {
   if (!name) return false;

@@ -7,20 +7,45 @@
 import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Input, Message, Modal, Select, Spin } from '@arco-design/web-react';
+import { Dropdown, Input, Menu, Message, Modal, Select, Spin, Switch } from '@arco-design/web-react';
 import { mutate } from 'swr';
 import { ipcBridge } from '@/common';
-import type { MarketplaceMcpItem, MarketplaceSkillItem, MarketplaceUpdateItem } from '@/common/types/ecosystem';
+import type { IMcpServer } from '@/common/config/storage';
+import type {
+  MarketplaceMcpItem,
+  MarketplaceSkillItem,
+  MarketplaceUpdateItem,
+  RuntimeEnvironmentReport,
+} from '@/common/types/ecosystem';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { openExternalUrl } from '@/renderer/utils/platform';
 import SettingsPageHeader from '@/renderer/pages/settings/components/SettingsPageHeader';
+import PluginDetailView, { type SelectedPluginTarget } from './PluginDetailView';
 
 type MarketplaceTab = 'discover' | 'mcp' | 'skills' | 'installed' | 'github';
 type SortMode = 'default' | 'stars' | 'installs';
 
+interface LocalSkillRow {
+  name: string;
+  description: string;
+  source: 'builtin' | 'custom' | 'cron' | 'extension';
+  is_custom: boolean;
+}
+
 type UnifiedPluginCard =
-  | { kind: 'mcp'; data: MarketplaceMcpItem; sortStars: number; sortInstalls: number }
-  | { kind: 'skill'; data: MarketplaceSkillItem; sortStars: number; sortInstalls: number };
+  | {
+      kind: 'mcp';
+      data: MarketplaceMcpItem;
+      installedServer?: IMcpServer;
+      sortStars: number;
+      sortInstalls: number;
+    }
+  | {
+      kind: 'skill';
+      data: MarketplaceSkillItem;
+      sortStars: number;
+      sortInstalls: number;
+    };
 
 function formatCompactCount(num: number): string {
   if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}m`;
@@ -52,6 +77,14 @@ const MarketplacePage: React.FC = () => {
 
   const [mcpItems, setMcpItems] = useState<MarketplaceMcpItem[]>([]);
   const [skillItems, setSkillItems] = useState<MarketplaceSkillItem[]>([]);
+  const [mcpNextCursor, setMcpNextCursor] = useState<string | undefined>(undefined);
+  const [loadingMoreMcp, setLoadingMoreMcp] = useState(false);
+
+  const [installedServers, setInstalledServers] = useState<IMcpServer[]>([]);
+  const [localSkills, setLocalSkills] = useState<LocalSkillRow[]>([]);
+  const [runtimeReport, setRuntimeReport] = useState<RuntimeEnvironmentReport | null>(null);
+  const [installingUv, setInstallingUv] = useState(false);
+
   const [loading, setLoading] = useState(false);
   const [remoteNotice, setRemoteNotice] = useState(false);
 
@@ -64,6 +97,9 @@ const MarketplacePage: React.FC = () => {
   const [configModalItem, setConfigModalItem] = useState<MarketplaceMcpItem | null>(null);
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [customRepoInput, setCustomRepoInput] = useState('');
+  const [selectedPluginKey, setSelectedPluginKey] = useState<{ kind: 'mcp' | 'skill'; name: string; id: string } | null>(
+    null
+  );
 
   useEffect(() => {
     const param = searchParams.get('tab');
@@ -73,22 +109,49 @@ const MarketplacePage: React.FC = () => {
     }
   }, [searchParams]);
 
-  const loadCatalogs = useCallback(async (searchText: string) => {
-    setLoading(true);
+  const loadRuntimeStatus = useCallback(async () => {
     try {
-      const [mcpRes, skillRes] = await Promise.all([
-        ipcBridge.ecosystem.searchMcpMarketplace.invoke({ query: searchText }),
-        ipcBridge.ecosystem.searchSkillsMarketplace.invoke({ query: searchText }),
-      ]);
-      setMcpItems(mcpRes.items || []);
-      setSkillItems(skillRes.items || []);
-      setRemoteNotice(Boolean(searchText.trim() && (mcpRes.remoteUnavailable || skillRes.remoteUnavailable)));
-    } catch (err) {
-      Message.error(err instanceof Error ? err.message : '加载插件市场失败');
-    } finally {
-      setLoading(false);
+      const report = await ipcBridge.ecosystem.getRuntimeStatus.invoke();
+      setRuntimeReport(report);
+    } catch {
+      // ignore on web fallback if unavailable
     }
   }, []);
+
+  const loadLocalInstalled = useCallback(async () => {
+    try {
+      const [servers, skills] = await Promise.all([
+        ipcBridge.mcpService.listServers.invoke().catch((): IMcpServer[] => []),
+        ipcBridge.fs.listAvailableSkills.invoke().catch((): LocalSkillRow[] => []),
+      ]);
+      setInstalledServers(servers || []);
+      setLocalSkills(skills || []);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const loadCatalogs = useCallback(
+    async (searchText: string) => {
+      setLoading(true);
+      try {
+        const [mcpRes, skillRes] = await Promise.all([
+          ipcBridge.ecosystem.searchMcpMarketplace.invoke({ query: searchText }),
+          ipcBridge.ecosystem.searchSkillsMarketplace.invoke({ query: searchText }),
+          loadLocalInstalled(),
+        ]);
+        setMcpItems(mcpRes.items || []);
+        setMcpNextCursor(mcpRes.nextCursor);
+        setSkillItems(skillRes.items || []);
+        setRemoteNotice(Boolean(mcpRes.remoteUnavailable || skillRes.remoteUnavailable));
+      } catch (err) {
+        Message.error(err instanceof Error ? err.message : '加载插件市场失败');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [loadLocalInstalled]
+  );
 
   const runUpdateCheck = useCallback(async (silent = true) => {
     setCheckingUpdates(true);
@@ -111,6 +174,7 @@ const MarketplacePage: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
+    void loadRuntimeStatus();
     void (async () => {
       try {
         await ipcBridge.ecosystem.syncMarketplace.invoke({ force: false });
@@ -125,7 +189,7 @@ const MarketplacePage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [loadCatalogs, runUpdateCheck]);
+  }, [loadCatalogs, runUpdateCheck, loadRuntimeStatus]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -142,6 +206,44 @@ const MarketplacePage: React.FC = () => {
     window.addEventListener('ethantoken:ecosystem-updated', handleEcosystemUpdated);
     return () => window.removeEventListener('ethantoken:ecosystem-updated', handleEcosystemUpdated);
   }, [loadCatalogs, query, runUpdateCheck]);
+
+  const handleInstallRuntimeUv = async () => {
+    setInstallingUv(true);
+    try {
+      const res = await ipcBridge.ecosystem.installManagedUv.invoke();
+      setRuntimeReport(res.report);
+      if (res.success) {
+        Message.success('uv / uvx 运行环境安装成功，已自动加入客户端运行时路径');
+      } else {
+        Message.error(res.error || '安装 uv 失败');
+      }
+    } catch (err) {
+      Message.error(err instanceof Error ? err.message : '安装 uv 失败');
+    } finally {
+      setInstallingUv(false);
+    }
+  };
+
+  const handleLoadMoreMcp = async () => {
+    if (!mcpNextCursor || loadingMoreMcp) return;
+    setLoadingMoreMcp(true);
+    try {
+      const res = await ipcBridge.ecosystem.searchMcpMarketplace.invoke({
+        query,
+        cursor: mcpNextCursor,
+      });
+      setMcpItems((prev) => {
+        const seen = new Set(prev.map((i) => i.name.toLowerCase()));
+        const additions = (res.items || []).filter((i) => !seen.has(i.name.toLowerCase()));
+        return [...prev, ...additions];
+      });
+      setMcpNextCursor(res.nextCursor);
+    } catch (err) {
+      Message.error(err instanceof Error ? err.message : '加载更多 MCP 失败');
+    } finally {
+      setLoadingMoreMcp(false);
+    }
+  };
 
   const handleSyncCatalog = async () => {
     setSyncing(true);
@@ -187,14 +289,22 @@ const MarketplacePage: React.FC = () => {
   };
 
   const updateMap = useMemo(() => new Map(updates.map((u) => [`${u.kind}:${u.name}`, u])), [updates]);
+  const installedServerByName = useMemo(
+    () => new Map(installedServers.map((s) => [s.name.toLowerCase(), s])),
+    [installedServers]
+  );
 
   const allUnifiedCards = useMemo<UnifiedPluginCard[]>(() => {
-    const mcps: UnifiedPluginCard[] = mcpItems.map((m) => ({
-      kind: 'mcp',
-      data: m,
-      sortStars: m.stars || 0,
-      sortInstalls: m.downloads || 0,
-    }));
+    const mcps: UnifiedPluginCard[] = mcpItems.map((m) => {
+      const srv = installedServerByName.get(m.name.toLowerCase());
+      return {
+        kind: 'mcp',
+        data: srv && !m.installed ? Object.assign({}, m, { installed: true }) : m,
+        installedServer: srv,
+        sortStars: m.stars || 0,
+        sortInstalls: m.downloads || 0,
+      };
+    });
     const skills: UnifiedPluginCard[] = skillItems.map((s) => ({
       kind: 'skill',
       data: s,
@@ -202,18 +312,95 @@ const MarketplacePage: React.FC = () => {
       sortInstalls: s.installs || 0,
     }));
     return [...mcps, ...skills];
-  }, [mcpItems, skillItems]);
+  }, [mcpItems, skillItems, installedServerByName]);
 
-  const installedCount = useMemo(
-    () => allUnifiedCards.filter((c) => c.data.installed).length,
-    [allUnifiedCards]
-  );
+  const installedCards = useMemo<UnifiedPluginCard[]>(() => {
+    const q = query.trim().toLowerCase();
+    const mcpByName = new Map(mcpItems.map((m) => [m.name.toLowerCase(), m]));
+    const skillByName = new Map(skillItems.map((s) => [s.name.toLowerCase(), s]));
+
+    const mcpInstalled: UnifiedPluginCard[] = installedServers
+      .filter((srv) => !srv.builtin)
+      .filter((srv) => !q || srv.name.toLowerCase().includes(q) || (srv.description || '').toLowerCase().includes(q))
+      .map((srv) => {
+        const catalog = mcpByName.get(srv.name.toLowerCase());
+        const item: MarketplaceMcpItem = catalog
+          ? Object.assign({}, catalog, { installed: true })
+          : {
+              id: `local:${srv.id}`,
+              name: srv.name,
+              title: srv.name,
+              description: srv.description || '本地已配置 MCP 服务',
+              category: '本地已装',
+              source: 'curated',
+              transport: srv.transport,
+              installed: true,
+            };
+        return {
+          kind: 'mcp',
+          data: item,
+          installedServer: srv,
+          sortStars: item.stars || 0,
+          sortInstalls: item.downloads || 0,
+        };
+      });
+
+    const seenSkills = new Set<string>();
+    const skillInstalled: UnifiedPluginCard[] = [];
+
+    for (const row of localSkills) {
+      if (row.source !== 'custom' && !row.is_custom) continue;
+      if (q && !row.name.toLowerCase().includes(q) && !row.description.toLowerCase().includes(q)) continue;
+      seenSkills.add(row.name.toLowerCase());
+      const catalog = skillByName.get(row.name.toLowerCase());
+      const item: MarketplaceSkillItem = catalog
+        ? Object.assign({}, catalog, { installed: true })
+        : {
+            id: `local-skill:${row.name}`,
+            name: row.name,
+            description: row.description || '自定义本地技能',
+            category: '本地技能',
+            source: 'curated',
+            repo: '',
+            skillId: row.name,
+            installed: true,
+          };
+      skillInstalled.push({
+        kind: 'skill',
+        data: item,
+        sortStars: item.stars || 0,
+        sortInstalls: item.installs || 0,
+      });
+    }
+
+    for (const s of skillItems) {
+      if (!s.installed || seenSkills.has(s.name.toLowerCase())) continue;
+      seenSkills.add(s.name.toLowerCase());
+      skillInstalled.push({
+        kind: 'skill',
+        data: s,
+        sortStars: s.stars || 0,
+        sortInstalls: s.installs || 0,
+      });
+    }
+
+    return [...mcpInstalled, ...skillInstalled];
+  }, [installedServers, localSkills, mcpItems, skillItems, query]);
+
+  const installedCount = installedCards.length;
+
+  const featuredSpotlights = useMemo(() => {
+    const preferredIds = ['curated:context7', 'curated:playwright', 'curated:sequential-thinking', 'curated:frontend-design'];
+    return preferredIds
+      .map((id) => allUnifiedCards.find((c) => c.data.id === id))
+      .filter((c): c is UnifiedPluginCard => Boolean(c));
+  }, [allUnifiedCards]);
 
   const tabFilteredCards = useMemo(() => {
     let base: UnifiedPluginCard[] = allUnifiedCards;
     if (activeTab === 'mcp') base = allUnifiedCards.filter((c) => c.kind === 'mcp');
     else if (activeTab === 'skills') base = allUnifiedCards.filter((c) => c.kind === 'skill');
-    else if (activeTab === 'installed') base = allUnifiedCards.filter((c) => c.data.installed);
+    else if (activeTab === 'installed') base = installedCards;
 
     if (sortMode === 'stars') {
       return base.toSorted((a, b) => b.sortStars - a.sortStars);
@@ -222,7 +409,7 @@ const MarketplacePage: React.FC = () => {
       return base.toSorted((a, b) => b.sortInstalls - a.sortInstalls);
     }
     return base;
-  }, [allUnifiedCards, activeTab, sortMode]);
+  }, [allUnifiedCards, installedCards, activeTab, sortMode]);
 
   const categories = useMemo(() => {
     const cats = new Set(tabFilteredCards.map((c) => c.data.category).filter(Boolean));
@@ -233,6 +420,55 @@ const MarketplacePage: React.FC = () => {
     if (selectedCategory === '全部') return tabFilteredCards;
     return tabFilteredCards.filter((c) => c.data.category === selectedCategory);
   }, [tabFilteredCards, selectedCategory]);
+
+  const selectedDetailTarget = useMemo<SelectedPluginTarget | null>(() => {
+    if (!selectedPluginKey) return null;
+    const pool = [...allUnifiedCards, ...installedCards];
+    const match = pool.find(
+      (c) =>
+        c.kind === selectedPluginKey.kind &&
+        (c.data.id === selectedPluginKey.id || c.data.name.toLowerCase() === selectedPluginKey.name.toLowerCase())
+    );
+    if (!match) return null;
+    const upd = updateMap.get(`${match.kind}:${match.data.name}`);
+    if (match.kind === 'mcp') {
+      return {
+        kind: 'mcp',
+        name: match.data.name,
+        title: match.data.title,
+        description: match.data.description,
+        category: match.data.category,
+        author: match.data.author,
+        version: match.data.version,
+        source: match.data.source,
+        repositoryUrl: match.data.repositoryUrl,
+        stars: match.data.stars,
+        downloads: match.data.downloads,
+        catalogItem: match.data,
+        installedServer: match.installedServer ?? installedServerByName.get(match.data.name.toLowerCase()),
+        hasUpdate: Boolean(upd),
+        remoteVersion: upd?.latestVersion,
+      };
+    }
+    return {
+      kind: 'skill',
+      name: match.data.name,
+      description: match.data.description,
+      category: match.data.category,
+      author: match.data.author,
+      version: match.data.version,
+      source: match.data.source,
+      repositoryUrl: match.data.repositoryUrl,
+      repo: match.data.repo,
+      skillId: match.data.skillId,
+      rawPath: match.data.rawPath,
+      stars: match.data.stars,
+      installs: match.data.installs,
+      catalogItem: match.data,
+      isInstalled: match.data.installed,
+      hasUpdate: Boolean(upd),
+    };
+  }, [selectedPluginKey, allUnifiedCards, installedCards, installedServerByName, updateMap]);
 
   const doInstallMcp = async (item: MarketplaceMcpItem, values?: Record<string, string>) => {
     setInstallingId(item.id);
@@ -299,6 +535,55 @@ const MarketplacePage: React.FC = () => {
     }
   };
 
+  const handleToggleMcpServer = async (srv: IMcpServer) => {
+    try {
+      await ipcBridge.mcpService.toggleServer.invoke({ id: srv.id });
+      await Promise.all([mutate('/api/mcp/servers'), mutate('assistants.list'), mutate('agents.boundAssistants.list')]);
+      await loadLocalInstalled();
+    } catch (err) {
+      Message.error(err instanceof Error ? err.message : '切换开关失败');
+    }
+  };
+
+  const handleQuickTestMcp = async (srv: IMcpServer) => {
+    try {
+      const res = await ipcBridge.mcpService.testMcpConnection.invoke(srv);
+      if (res.success) {
+        Message.success(`${srv.name} 运行正常（${(res.tools || []).length} 个工具）`);
+      } else {
+        Message.warning(`${srv.name} 检测异常：${res.error || '连接失败'}`);
+      }
+      await loadLocalInstalled();
+    } catch (err) {
+      Message.error(err instanceof Error ? err.message : '检测失败');
+    }
+  };
+
+  const handleUninstallCard = (card: UnifiedPluginCard) => {
+    Modal.confirm({
+      title: `卸载 ${card.kind === 'mcp' ? card.data.title : card.data.name}`,
+      content: '卸载后将从本地移除该插件，确定继续吗？',
+      okText: '确认卸载',
+      cancelText: '取消',
+      okButtonProps: { status: 'danger' },
+      onOk: async () => {
+        try {
+          if (card.kind === 'mcp' && card.installedServer) {
+            await ipcBridge.mcpService.deleteServer.invoke({ id: card.installedServer.id });
+          } else if (card.kind === 'skill') {
+            await ipcBridge.fs.deleteSkill.invoke({ skill_name: card.data.name });
+          }
+          Message.success(`已卸载 ${card.data.name}`);
+          await Promise.all([mutate('/api/mcp/servers'), mutate('skills.list')]);
+          window.dispatchEvent(new CustomEvent('ethantoken:ecosystem-updated'));
+          await loadCatalogs(query);
+        } catch (err) {
+          Message.error(err instanceof Error ? err.message : '卸载失败');
+        }
+      },
+    });
+  };
+
   const handleInstallCustomRepo = async () => {
     const spec = customRepoInput.trim();
     if (!spec) {
@@ -341,6 +626,19 @@ const MarketplacePage: React.FC = () => {
     setSearchParams(tab === 'discover' ? {} : { tab }, { replace: true });
   };
 
+  if (selectedDetailTarget) {
+    return (
+      <PluginDetailView
+        plugin={selectedDetailTarget}
+        runtimeReport={runtimeReport}
+        installingUv={installingUv}
+        onInstallRuntimeUv={handleInstallRuntimeUv}
+        onBack={() => setSelectedPluginKey(null)}
+        onRefresh={() => loadCatalogs(query)}
+      />
+    );
+  }
+
   const tabItems: Array<{ key: MarketplaceTab; label: string }> = [
     { key: 'discover', label: `发现 (${allUnifiedCards.length})` },
     { key: 'mcp', label: `MCP 工具 (${mcpItems.length})` },
@@ -348,6 +646,10 @@ const MarketplacePage: React.FC = () => {
     { key: 'installed', label: `已安装 (${installedCount})` },
     { key: 'github', label: 'GitHub 直装' },
   ];
+
+  const openDetail = (card: UnifiedPluginCard) => {
+    setSelectedPluginKey({ kind: card.kind, name: card.data.name, id: card.data.id });
+  };
 
   return (
     <div className='w-full h-full min-h-0 box-border bg-1 flex flex-col overflow-hidden select-none'>
@@ -361,7 +663,7 @@ const MarketplacePage: React.FC = () => {
           <SettingsPageHeader
             sticky={false}
             title='插件市场'
-            description='发现与安装社区精选及官方 Registry 工具（MCP & Skills），自动追踪更新与一键迁移本地客户端配置。'
+            description='精选高可用工具 + 实时聚合官方 MCP Registry 与 skills.sh 社区技能，内置免配置运行环境。'
             actions={
               <div className='flex items-center gap-8px flex-wrap'>
                 <button
@@ -420,6 +722,46 @@ const MarketplacePage: React.FC = () => {
               );
             })}
           </div>
+
+          {runtimeReport && (
+            <div className='flex items-center justify-between gap-10px px-12px py-7px rd-10px bg-fill-1 border border-solid border-[var(--color-border-2)] text-12px flex-wrap'>
+              <div className='flex items-center gap-12px flex-wrap'>
+                <span className='text-t-tertiary font-500'>内置运行环境：</span>
+                <span
+                  className={
+                    runtimeReport.npx.available ? 'text-[#15803d] dark:text-[#34d399]' : 'text-[#d97706]'
+                  }
+                >
+                  ● Node / npx{' '}
+                  {runtimeReport.npx.available
+                    ? runtimeReport.node.source === 'bundled'
+                      ? `内置就绪 (${runtimeReport.node.version || 'v24'})`
+                      : `已就绪 (${runtimeReport.node.version || '系统'})`
+                    : '未检测到'}
+                </span>
+                <span
+                  className={
+                    runtimeReport.uvx.available ? 'text-[#15803d] dark:text-[#34d399]' : 'text-[#d97706]'
+                  }
+                >
+                  ● uv / uvx{' '}
+                  {runtimeReport.uvx.available
+                    ? `${runtimeReport.uvx.source === 'managed' ? '托管就绪' : '系统就绪'} (${runtimeReport.uvx.version || 'ok'})`
+                    : '未安装（Python MCP 需此环境）'}
+                </span>
+              </div>
+              {!runtimeReport.uvx.available && (
+                <button
+                  type='button'
+                  disabled={installingUv}
+                  onClick={() => void handleInstallRuntimeUv()}
+                  className='h-24px px-10px b-none rd-999px text-11.5px font-600 cursor-pointer bg-[#111111] hover:opacity-85 text-[#ffffff] dark:bg-[#f5f5f7] dark:text-[#111111] disabled:opacity-50'
+                >
+                  {installingUv ? '正在安装 uv...' : '一键安装 uv'}
+                </button>
+              )}
+            </div>
+          )}
 
           {activeTab !== 'github' && (
             <div className='flex flex-col gap-10px'>
@@ -502,6 +844,32 @@ const MarketplacePage: React.FC = () => {
                 </div>
               )}
 
+              {activeTab === 'discover' && !query.trim() && selectedCategory === '全部' && featuredSpotlights.length > 0 && (
+                <div className='mb-16px'>
+                  <div className='text-12.5px font-600 text-t-secondary mb-8px'>热门精选推荐（点击卡片可查看使用教程与参数配置）</div>
+                  <div className='grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-10px'>
+                    {featuredSpotlights.map((card) => {
+                      const title = card.kind === 'mcp' ? card.data.title : card.data.name;
+                      return (
+                        <div
+                          key={`spot:${card.data.id}`}
+                          onClick={() => openDetail(card)}
+                          className='box-border p-12px rd-10px bg-base border border-solid border-[var(--color-border-2)] hover:border-[var(--color-border-3)] cursor-pointer transition-colors flex flex-col justify-between gap-6px'
+                        >
+                          <div className='flex items-center justify-between gap-6px'>
+                            <span className='text-13px font-600 text-t-primary truncate'>{title}</span>
+                            <span className='text-10.5px text-t-tertiary shrink-0'>
+                              {card.data.installed ? '✓ 已安装' : '详情 →'}
+                            </span>
+                          </div>
+                          <div className='text-11.5px text-t-secondary line-clamp-1'>{card.data.description}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {loading && visibleCards.length === 0 ? (
                 <div className='py-64px flex items-center justify-center'>
                   <Spin size={24} />
@@ -511,102 +879,187 @@ const MarketplacePage: React.FC = () => {
                   当前筛选条件下暂无插件卡片
                 </div>
               ) : (
-                <div className='grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-12px'>
-                  {visibleCards.map((card) => {
-                    const isMcp = card.kind === 'mcp';
-                    const title = isMcp ? card.data.title : card.data.name;
-                    const subName = card.data.name;
-                    const author = card.data.author;
-                    const version = card.data.version;
-                    const stars = card.data.stars;
-                    const installs = isMcp ? card.data.downloads : card.data.installs;
-                    const repoUrl = card.data.repositoryUrl;
-                    const updateInfo = updateMap.get(`${card.kind}:${subName}`);
-                    const hasUpdate = Boolean(updateInfo);
-                    const isBusy = installingId === card.data.id;
+                <>
+                  <div className='grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-12px'>
+                    {visibleCards.map((card) => {
+                      const isMcp = card.kind === 'mcp';
+                      const title = isMcp ? card.data.title : card.data.name;
+                      const subName = card.data.name;
+                      const author = card.data.author;
+                      const version = card.data.version;
+                      const stars = card.data.stars;
+                      const installs = isMcp ? card.data.downloads : card.data.installs;
+                      const repoUrl = card.data.repositoryUrl;
+                      const updateInfo = updateMap.get(`${card.kind}:${subName}`);
+                      const hasUpdate = Boolean(updateInfo);
+                      const isBusy = installingId === card.data.id;
+                      const srv = isMcp ? card.installedServer : undefined;
 
-                    return (
-                      <div
-                        key={`${card.kind}:${card.data.id}`}
-                        className='box-border p-14px rd-12px bg-base border border-solid border-[var(--color-border-2)] hover:border-[var(--color-border-3)] transition-colors flex flex-col justify-between gap-10px min-h-148px'
-                      >
-                        <div>
-                          <div className='flex items-start justify-between gap-8px'>
-                            <div className='min-w-0 flex-1'>
-                              <div className='flex items-center gap-6px'>
-                                <span className='text-14px font-600 text-t-primary truncate' title={title}>
-                                  {title}
-                                </span>
-                                {repoUrl && (
+                      return (
+                        <div
+                          key={`${card.kind}:${card.data.id}`}
+                          onClick={() => openDetail(card)}
+                          className='box-border p-14px rd-12px bg-base border border-solid border-[var(--color-border-2)] hover:border-[var(--color-border-3)] transition-colors cursor-pointer flex flex-col justify-between gap-10px min-h-148px'
+                        >
+                          <div>
+                            <div className='flex items-start justify-between gap-8px'>
+                              <div className='min-w-0 flex-1'>
+                                <div className='flex items-center gap-6px'>
+                                  <span className='text-14px font-600 text-t-primary truncate' title={title}>
+                                    {title}
+                                  </span>
+                                  {repoUrl && (
+                                    <button
+                                      type='button'
+                                      title='查看 GitHub 仓库'
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void openExternalUrl(repoUrl);
+                                      }}
+                                      className='p-0 b-none bg-transparent text-t-tertiary hover:text-t-primary cursor-pointer flex items-center shrink-0'
+                                    >
+                                      <GitHubMiniIcon />
+                                    </button>
+                                  )}
+                                </div>
+                                <div className='mt-3px flex items-center gap-8px text-11.5px text-t-tertiary flex-wrap'>
+                                  {author && <span>{author}</span>}
+                                  {version && <span>v{version}</span>}
+                                  {typeof stars === 'number' && <span>★ {formatCompactCount(stars)}</span>}
+                                  {typeof installs === 'number' && <span>↓ {formatCompactCount(installs)}</span>}
+                                </div>
+                              </div>
+
+                              <div
+                                className='flex items-center gap-6px shrink-0'
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {hasUpdate ? (
                                   <button
                                     type='button'
-                                    title='查看 GitHub 仓库'
-                                    onClick={() => void openExternalUrl(repoUrl)}
-                                    className='p-0 b-none bg-transparent text-t-tertiary hover:text-t-primary cursor-pointer flex items-center shrink-0'
+                                    disabled={isBusy}
+                                    onClick={() => void handleInstallCard(card)}
+                                    className='h-26px px-11px b-none rd-999px text-11.5px font-600 shrink-0 cursor-pointer bg-[#15803d] hover:opacity-90 text-[#ffffff] disabled:opacity-50'
                                   >
-                                    <GitHubMiniIcon />
+                                    {isBusy ? '更新中' : '更新'}
+                                  </button>
+                                ) : card.data.installed ? (
+                                  activeTab === 'installed' && srv ? (
+                                    <Switch
+                                      size='small'
+                                      checked={srv.enabled}
+                                      onChange={() => void handleToggleMcpServer(srv)}
+                                    />
+                                  ) : (
+                                    <span className='h-26px px-10px rd-999px text-11.5px font-500 shrink-0 inline-flex items-center bg-[#15803d]/10 text-[#15803d] dark:bg-[#34d399]/15 dark:text-[#34d399]'>
+                                      ✓ 已安装
+                                    </span>
+                                  )
+                                ) : (
+                                  <button
+                                    type='button'
+                                    disabled={isBusy}
+                                    onClick={() => void handleInstallCard(card)}
+                                    className='h-26px px-12px b-none rd-999px text-11.5px font-600 shrink-0 cursor-pointer transition-opacity bg-[#111111] hover:opacity-85 text-[#ffffff] dark:bg-[#f5f5f7] dark:text-[#111111] disabled:opacity-50'
+                                  >
+                                    {isBusy ? '安装中' : '安装'}
                                   </button>
                                 )}
-                              </div>
-                              <div className='mt-3px flex items-center gap-8px text-11.5px text-t-tertiary flex-wrap'>
-                                {author && <span>{author}</span>}
-                                {version && <span>v{version}</span>}
-                                {typeof stars === 'number' && <span>★ {formatCompactCount(stars)}</span>}
-                                {typeof installs === 'number' && <span>↓ {formatCompactCount(installs)}</span>}
+
+                                {card.data.installed && (
+                                  <Dropdown
+                                    trigger='click'
+                                    droplist={
+                                      <Menu
+                                        onClickMenuItem={(key) => {
+                                          if (key === 'detail') openDetail(card);
+                                          else if (key === 'test' && srv) void handleQuickTestMcp(srv);
+                                          else if (key === 'uninstall') handleUninstallCard(card);
+                                        }}
+                                      >
+                                        <Menu.Item key='detail'>在详情页查看与配置</Menu.Item>
+                                        {srv && <Menu.Item key='test'>检测运行状态</Menu.Item>}
+                                        {(!srv || !srv.builtin) && (
+                                          <Menu.Item key='uninstall'>
+                                            <span className='text-[#ef4444]'>卸载插件</span>
+                                          </Menu.Item>
+                                        )}
+                                      </Menu>
+                                    }
+                                  >
+                                    <button
+                                      type='button'
+                                      title='更多操作'
+                                      className='w-24px h-24px rd-6px b-none bg-transparent hover:bg-fill-2 text-t-tertiary hover:text-t-primary cursor-pointer flex items-center justify-center'
+                                    >
+                                      ···
+                                    </button>
+                                  </Dropdown>
+                                )}
                               </div>
                             </div>
 
-                            {hasUpdate ? (
-                              <button
-                                type='button'
-                                disabled={isBusy}
-                                onClick={() => void handleInstallCard(card)}
-                                className='h-26px px-11px b-none rd-999px text-11.5px font-600 shrink-0 cursor-pointer bg-[#15803d] hover:opacity-90 text-[#ffffff] disabled:opacity-50'
-                              >
-                                {isBusy ? '更新中' : '更新'}
-                              </button>
-                            ) : card.data.installed ? (
-                              <span className='h-26px px-10px rd-999px text-11.5px font-500 shrink-0 inline-flex items-center bg-[#15803d]/10 text-[#15803d] dark:bg-[#34d399]/15 dark:text-[#34d399]'>
-                                ✓ 已安装
+                            <p className='m-0 mt-8px text-12px text-t-secondary leading-relaxed line-clamp-2' title={card.data.description}>
+                              {card.data.description}
+                            </p>
+                          </div>
+
+                          <div className='flex items-center justify-between gap-6px pt-6px border-t border-solid border-[var(--color-border-1)] border-x-0 border-b-0'>
+                            <div className='flex items-center gap-6px flex-wrap'>
+                              <span className='px-6px py-1px rd-4px text-10.5px bg-fill-2 text-t-secondary'>
+                                {isMcp ? 'MCP 工具' : 'Skill 技能'}
                               </span>
-                            ) : (
-                              <button
-                                type='button'
-                                disabled={isBusy}
-                                onClick={() => void handleInstallCard(card)}
-                                className='h-26px px-12px b-none rd-999px text-11.5px font-600 shrink-0 cursor-pointer transition-opacity bg-[#111111] hover:opacity-85 text-[#ffffff] dark:bg-[#f5f5f7] dark:text-[#111111] disabled:opacity-50'
-                              >
-                                {isBusy ? '安装中' : '安装'}
-                              </button>
-                            )}
-                          </div>
-
-                          <p className='m-0 mt-8px text-12px text-t-secondary leading-relaxed line-clamp-2' title={card.data.description}>
-                            {card.data.description}
-                          </p>
-                        </div>
-
-                        <div className='flex items-center justify-between gap-6px pt-6px border-t border-solid border-[var(--color-border-1)] border-x-0 border-b-0'>
-                          <div className='flex items-center gap-6px flex-wrap'>
-                            <span className='px-6px py-1px rd-4px text-10.5px bg-fill-2 text-t-secondary'>
-                              {isMcp ? 'MCP 工具' : 'Skill 技能'}
+                              <span className='px-6px py-1px rd-4px text-10.5px bg-fill-1 text-t-tertiary border border-solid border-[var(--color-border-2)]'>
+                                {card.data.category}
+                              </span>
+                              {srv && (
+                                <span
+                                  className={`px-6px py-1px rd-4px text-10.5px ${
+                                    srv.last_test_status === 'connected'
+                                      ? 'text-[#15803d] bg-[#15803d]/10 dark:text-[#34d399]'
+                                      : srv.last_test_status === 'error'
+                                        ? 'text-[#dc2626] bg-[#ef4444]/10'
+                                        : srv.enabled
+                                          ? 'text-[#15803d] bg-[#15803d]/10 dark:text-[#34d399]'
+                                          : 'text-t-tertiary bg-fill-1'
+                                  }`}
+                                >
+                                  {srv.last_test_status === 'connected'
+                                    ? '● 运行中'
+                                    : srv.last_test_status === 'error'
+                                      ? '● 检测异常'
+                                      : srv.enabled
+                                        ? '● 已启用'
+                                        : '● 已停用'}
+                                </span>
+                              )}
+                            </div>
+                            <span className='text-10.5px text-t-tertiary shrink-0'>
+                              {card.data.source === 'curated'
+                                ? '官方精选'
+                                : card.data.source === 'registry'
+                                  ? 'MCP Registry'
+                                  : 'skills.sh'}
                             </span>
-                            <span className='px-6px py-1px rd-4px text-10.5px bg-fill-1 text-t-tertiary border border-solid border-[var(--color-border-2)]'>
-                              {card.data.category}
-                            </span>
                           </div>
-                          <span className='text-10.5px text-t-tertiary shrink-0'>
-                            {card.data.source === 'curated'
-                              ? '官方精选'
-                              : card.data.source === 'registry'
-                                ? 'MCP Registry'
-                                : 'skills.sh'}
-                          </span>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+
+                  {(activeTab === 'discover' || activeTab === 'mcp') && mcpNextCursor && (
+                    <div className='mt-18px flex justify-center'>
+                      <button
+                        type='button'
+                        disabled={loadingMoreMcp}
+                        onClick={() => void handleLoadMoreMcp()}
+                        className='h-34px px-20px rd-999px bg-base border border-solid border-[var(--color-border-2)] text-12.5px font-500 text-t-primary hover:bg-fill-2 cursor-pointer disabled:opacity-50'
+                      >
+                        {loadingMoreMcp ? '加载更多 MCP 中...' : '加载更多官方 Registry MCP'}
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}
@@ -628,21 +1081,14 @@ const MarketplacePage: React.FC = () => {
             <div key={field.key}>
               <div className='text-12.5px font-500 text-t-primary mb-5px'>
                 {field.label}
-                {field.required && <span className='text-[rgb(var(--danger-6))] ml-3px'>*</span>}
+                {field.required && <span className='text-[#ef4444] ml-4px'>*</span>}
               </div>
-              {field.secret ? (
-                <Input.Password
-                  value={fieldValues[field.key] || ''}
-                  onChange={(val) => setFieldValues((prev) => ({ ...prev, [field.key]: val }))}
-                  placeholder={field.placeholder}
-                />
-              ) : (
-                <Input
-                  value={fieldValues[field.key] || ''}
-                  onChange={(val) => setFieldValues((prev) => ({ ...prev, [field.key]: val }))}
-                  placeholder={field.placeholder}
-                />
-              )}
+              <Input
+                type={field.secret ? 'password' : 'text'}
+                value={fieldValues[field.key] ?? ''}
+                placeholder={field.placeholder}
+                onChange={(val) => setFieldValues((prev) => ({ ...prev, [field.key]: val }))}
+              />
             </div>
           ))}
         </div>

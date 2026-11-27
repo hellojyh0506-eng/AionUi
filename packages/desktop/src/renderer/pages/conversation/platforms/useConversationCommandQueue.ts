@@ -420,7 +420,9 @@ type UseConversationCommandQueueOptions = {
 /// `sessions` is part of the enqueue input, not just of the stored item: a
 /// message that reaches the draft box and loses its `@@` references fails
 /// silently — the send succeeds and the agent simply never sees the block.
-type EnqueueCommandInput = Pick<ConversationCommandQueueItem, 'input' | 'files' | 'sessions'>;
+type EnqueueCommandInput = Pick<ConversationCommandQueueItem, 'input' | 'files' | 'sessions'> & {
+  autoSend?: boolean;
+};
 type UpdateCommandInput = Pick<ConversationCommandQueueItem, 'input'>;
 type BackgroundCommandQueueRunner = {
   conversation_id: string;
@@ -768,7 +770,7 @@ export const useConversationCommandQueue = ({
   );
 
   const enqueue = useCallback(
-    ({ input, files, sessions }: EnqueueCommandInput) => {
+    ({ input, files, sessions, autoSend }: EnqueueCommandInput) => {
       if (!enabled) {
         return null;
       }
@@ -791,6 +793,7 @@ export const useConversationCommandQueue = ({
       const nextState: ConversationCommandQueueState = {
         ...currentState,
         items: [...currentState.items, item],
+        ...(autoSend ? { mode: 'auto' as const, isPaused: false } : {}),
       };
       stateRef.current = nextState;
       logCommandQueue(conversation_id, 'enqueued', {

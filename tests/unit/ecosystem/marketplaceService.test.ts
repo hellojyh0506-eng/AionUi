@@ -20,6 +20,7 @@ import {
   applyMcpConfigFields,
   checkMarketplaceUpdates,
   downloadSkillMarkdownFromGitHub,
+  getPluginDetails,
   importSkillMarkdownToBackend,
   installMcpItemToBackend,
   parseGitHubSkillSpecifier,
@@ -314,5 +315,170 @@ describe('globalMemory', () => {
     expect(updateRes.updatedCount).toBe(1);
     expect(updateRes.failed).toHaveLength(0);
     expect(importedMarkdown).toContain('v2');
+  });
+
+  it('aggregates paginated MCP registry results and multi-topic skills.sh discovery with caching', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aionui-mkt-discover-'));
+    tmpRoots.push(root);
+
+    let mcpCalls = 0;
+    const mockFetch = (async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('registry.modelcontextprotocol.io/v0.1/servers')) {
+        mcpCalls += 1;
+        if (url.includes('cursor=page2')) {
+          return new Response(
+            JSON.stringify({
+              servers: [
+                {
+                  server: {
+                    name: 'io.example/server-two',
+                    title: 'Server Two',
+                    description: 'Second page MCP server',
+                    version: '1.2.0',
+                    packages: [{ registryType: 'npm', identifier: '@example/server-two' }],
+                  },
+                },
+              ],
+              metadata: { nextCursor: 'page3' },
+            }),
+            { status: 200 }
+          );
+        }
+        if (url.includes('cursor=page3')) {
+          return new Response(
+            JSON.stringify({
+              servers: [
+                {
+                  server: {
+                    name: 'io.example/server-three',
+                    title: 'Server Three',
+                    description: 'Third page MCP server',
+                    version: '2.0.0',
+                    packages: [{ registryType: 'npm', identifier: '@example/server-three' }],
+                  },
+                },
+              ],
+              metadata: {},
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            servers: [
+              {
+                server: {
+                  name: 'io.example/server-one',
+                  title: 'Server One',
+                  description: 'First page MCP server',
+                  version: '1.0.0',
+                  packages: [{ registryType: 'npm', identifier: '@example/server-one' }],
+                },
+              },
+            ],
+            metadata: { nextCursor: 'page2' },
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (url.includes('skills.sh/api/search')) {
+        const parsedUrl = new URL(url);
+        const topic = parsedUrl.searchParams.get('q') || 'agent';
+        return new Response(
+          JSON.stringify({
+            skills: [
+              {
+                id: `${topic}/skill-one`,
+                source: `org/${topic}`,
+                skillId: `${topic}-skill`,
+                name: `${topic}-skill`,
+                installs: 500,
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+
+      return new Response('', { status: 404 });
+    }) as typeof fetch;
+
+    const firstMcp = await searchMcpMarketplace('', new Set(['server-two']), mockFetch, root);
+    expect(firstMcp.items.some((i) => i.name === 'server-one' && !i.installed)).toBe(true);
+    expect(firstMcp.items.some((i) => i.name === 'server-two' && i.installed)).toBe(true);
+    expect(firstMcp.nextCursor).toBe('page3');
+    expect(mcpCalls).toBe(2);
+
+    // Second empty search hits fresh cache without extra remote HTTP calls.
+    const cachedMcp = await searchMcpMarketplace('', new Set(['server-one']), mockFetch, root);
+    expect(cachedMcp.items.some((i) => i.name === 'server-one' && i.installed)).toBe(true);
+    expect(mcpCalls).toBe(2);
+
+    // Explicit cursor fetches page 3 directly.
+    const page3 = await searchMcpMarketplace('', new Set(), mockFetch, root, 'page3');
+    expect(page3.items.map((i) => i.name)).toContain('server-three');
+    expect(page3.nextCursor).toBeUndefined();
+
+    // Default skills discover aggregates curated + multi-topic skills.sh items.
+    const discoverSkills = await searchSkillsMarketplace('', new Set(['agent-skill']), mockFetch, root);
+    expect(discoverSkills.items.some((s) => s.name === 'agent-skill' && s.installed)).toBe(true);
+    expect(discoverSkills.items.some((s) => s.name === 'react-skill')).toBe(true);
+
+    // 1-character queries return curated matches cleanly without hitting remote 400.
+    const shortQuery = await searchSkillsMarketplace('a', new Set(), mockFetch, root);
+    expect(shortQuery.remoteUnavailable).toBeUndefined();
+  });
+
+  it('resolves plugin README / SKILL.md details cleanly across local, GitHub, and curated fallbacks', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aionui-mkt-detail-'));
+    const skillsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aionui-local-skills-'));
+    tmpRoots.push(root, skillsDir);
+
+    const localDir = path.join(skillsDir, 'my-custom-skill');
+    fs.mkdirSync(localDir, { recursive: true });
+    fs.writeFileSync(path.join(localDir, 'SKILL.md'), '---\nname: my-custom-skill\n---\n\n# Local Skill Body\n', 'utf-8');
+
+    const mockFetch = (async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('raw.githubusercontent.com/upstash/context7/HEAD/README.md')) {
+        return new Response('# Context7 Official README\n\nLive docs MCP.', { status: 200 });
+      }
+      return new Response('', { status: 404 });
+    }) as typeof fetch;
+
+    const localDetail = await getPluginDetails(
+      { kind: 'skill', id: 'local:my-custom-skill', name: 'my-custom-skill' },
+      { fetchImpl: mockFetch, overrideDataDir: root, overrideUserSkillsDir: skillsDir }
+    );
+    expect(localDetail.resolvedFrom).toBe('local-skill');
+    expect(localDetail.readmeMarkdown).toContain('Local Skill Body');
+
+    const mcpDetail = await getPluginDetails(
+      {
+        kind: 'mcp',
+        id: 'curated:context7',
+        name: 'context7',
+        repositoryUrl: 'https://github.com/upstash/context7',
+      },
+      { fetchImpl: mockFetch, overrideDataDir: root, overrideUserSkillsDir: skillsDir }
+    );
+    expect(mcpDetail.resolvedFrom).toBe('github-readme');
+    expect(mcpDetail.readmeMarkdown).toContain('Context7 Official README');
+    expect(mcpDetail.usageGuide).toBeTruthy();
+    expect((mcpDetail.examplePrompts || []).length).toBeGreaterThan(0);
+
+    // Offline curated MCP still returns curated usageGuide and prompts.
+    const offlineCurated = await getPluginDetails(
+      { kind: 'mcp', id: 'curated:sequential-thinking', name: 'sequential-thinking' },
+      {
+        fetchImpl: (async () => new Response('', { status: 500 })) as typeof fetch,
+        overrideDataDir: root,
+        overrideUserSkillsDir: skillsDir,
+      }
+    );
+    expect(offlineCurated.resolvedFrom).toBe('curated');
+    expect(offlineCurated.usageGuide).toBeTruthy();
   });
 });

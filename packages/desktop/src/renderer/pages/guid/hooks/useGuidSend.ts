@@ -7,6 +7,7 @@
 import { ipcBridge } from '@/common';
 import { type ChatFileRef, chatFileRefPath } from '@/common/types/chatFile';
 import type { IMcpServer, TProviderWithModel } from '@/common/config/storage';
+import type { KnowledgeCollection } from '@/common/types/knowledge';
 import { toSessionMcpServer } from '@/renderer/hooks/mcp/catalog';
 import { emitter } from '@/renderer/utils/emitter';
 import { updateWorkspaceTime } from '@/renderer/utils/workspace/workspaceHistory';
@@ -43,6 +44,8 @@ export type GuidSendDeps = {
   availableMcpServers: IMcpServer[];
   selectedMcpServerIds: string[] | undefined;
   assistantDefaultMcpIds?: string[];
+  selectedKbIds?: string[];
+  knowledgeCollections?: KnowledgeCollection[];
   isGoogleAuth: boolean;
 
   // Mention state reset
@@ -89,6 +92,8 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     availableMcpServers,
     selectedMcpServerIds,
     assistantDefaultMcpIds,
+    selectedKbIds = [],
+    knowledgeCollections = [],
     setMentionOpen,
     setMentionQuery,
     setMentionSelectorOpen,
@@ -170,6 +175,17 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       mcp_ids: assistantOverrideMcpIds,
     };
 
+    const trimmedInput = input.trim();
+    const hints: string[] = [];
+    if (trimmedInput && selectedKbIds.length > 0) {
+      const selectedCols = knowledgeCollections.filter((c) => selectedKbIds.includes(c.id));
+      const kbLabel = selectedCols.map((c) => c.name).join('、') || selectedKbIds.join(', ');
+      hints.push(
+        `[已关联本地知识空间：${kbLabel} (collectionIds: ${JSON.stringify(selectedKbIds)})。仅当本轮问题与该知识空间资料相关时，再调用内置 MCP 工具 knowledge_search 按需检索；与资料无关的话题请直接回答，勿强行引用无关文档。]`
+      );
+    }
+    const effectiveInput = trimmedInput && hints.length > 0 ? `${input}\n\n${hints.join('\n')}` : input;
+
     if (assistantBackend === 'aionrs') {
       if (!current_model) {
         Message.warning(t('conversation.noModelConfigured'));
@@ -216,7 +232,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         // auto-sending a blank first turn.
         if (input.trim()) {
           const initialMessage = {
-            input,
+            input: effectiveInput,
             files: files.length > 0 ? files : undefined,
           };
           sessionStorage.setItem(`aionrs_initial_message_${conversation.id}`, JSON.stringify(initialMessage));
@@ -270,7 +286,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       // auto-sending a blank first turn.
       if (input.trim()) {
         const initialMessage = {
-          input,
+          input: effectiveInput,
           files: files.length > 0 ? files : undefined,
         };
         sessionStorage.setItem(`acp_initial_message_${conversation.id}`, JSON.stringify(initialMessage));
@@ -298,6 +314,8 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     availableMcpServers,
     selectedMcpServerIds,
     assistantDefaultMcpIds,
+    selectedKbIds,
+    knowledgeCollections,
     navigate,
     t,
     localeKey,

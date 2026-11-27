@@ -6,7 +6,7 @@
 
 import React from 'react';
 import { Avatar, Button, Switch, Tag, Tooltip, Typography } from '@arco-design/web-react';
-import { Delete, EditTwo, Robot } from '@icon-park/react';
+import { Delete, EditTwo, MagicWand, Robot } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import type { Assistant } from '@/common/types/agent/assistantTypes';
 import { resolveAgentAvatar, useAgentLogos } from '@/renderer/utils/model/agentLogo';
@@ -25,6 +25,7 @@ type AgentCardProps =
       boundAssistants: Assistant[];
       onTestConnection: () => void;
       onConfigure: () => void;
+      onGuideInstall?: (mode: 'install' | 'auth') => void;
       isTesting?: boolean;
     }
   | {
@@ -168,6 +169,20 @@ const AgentCard: React.FC<AgentCardProps> = (props) => {
 
       <div className='ms-12px flex flex-shrink-0 items-center gap-8px' onClick={stop}>
         <BoundAssistantStack assistants={boundAssistants} />
+        {props.type === 'official' &&
+          props.onGuideInstall &&
+          (displayStatus === 'missing' || displayStatus === 'needs_auth') && (
+            <Button
+              data-testid={`agent-row-butler-install-${agent.id}`}
+              size='small'
+              type='primary'
+              icon={<MagicWand theme='outline' size='13' />}
+              onClick={() => props.onGuideInstall?.(displayStatus === 'needs_auth' ? 'auth' : 'install')}
+              className='!h-30px !rounded-8px !px-10px !text-12px !font-500'
+            >
+              {displayStatus === 'needs_auth' ? '管家帮登录' : '管家帮装'}
+            </Button>
+          )}
         <Button
           data-testid={`agent-row-test-${agent.id}`}
           size='small'

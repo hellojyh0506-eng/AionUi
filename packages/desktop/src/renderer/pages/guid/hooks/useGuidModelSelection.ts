@@ -100,6 +100,10 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'aionrs'): Gu
   useEffect(() => {
     const setDefaultModel = async () => {
       if (!modelList || modelList.length === 0) {
+        if (selectedModelKeyRef.current !== null || current_model !== undefined) {
+          selectedModelKeyRef.current = null;
+          _setCurrentModel(undefined);
+        }
         return;
       }
       const currentKey = selectedModelKeyRef.current || buildModelKey(current_model?.id, current_model?.use_model);

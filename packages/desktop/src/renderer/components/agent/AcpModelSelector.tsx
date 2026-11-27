@@ -14,15 +14,8 @@ import { Brain, Down } from '@icon-park/react';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import RuntimeSelectorPill, { RuntimeSelectorLoadingIndicator } from './RuntimeSelectorPill';
-import {
-  composeRuntimeSelectorLabel,
-  getCurrentThoughtLevelLabel,
-  isConfigSetting,
-  RUNTIME_SUBMENU_TRIGGER_PROPS,
-  RuntimeSelectorCheckedItem,
-  RuntimeSelectorModelList,
-  RuntimeSelectorSubMenuTitle,
-} from './runtimeSelectorOptions';
+import { ThinkingEffortSlider } from './ThinkingEffortSlider';
+import { composeRuntimeSelectorLabel, isConfigSetting, RuntimeSelectorModelList } from './runtimeSelectorOptions';
 
 /**
  * Warmup status for a team teammate's runtime, defined locally so this shared
@@ -226,65 +219,29 @@ const AcpModelSelector: React.FC<{
       droplist={
         <Menu>
           {thoughtLevel ? (
-            <>
-              {/* Two-level layout: first level shows model + thought-level rows;
-                  each expands into a left-side submenu with the full option list. */}
-              <Menu.SubMenu
-                key='model'
-                triggerProps={RUNTIME_SUBMENU_TRIGGER_PROPS}
-                title={
-                  <RuntimeSelectorSubMenuTitle
-                    label={t('common.model', { defaultValue: 'Model' })}
-                    value={display_label}
-                  />
-                }
-              >
-                <RuntimeSelectorModelList
-                  models={model_info.available_models}
-                  currentModelId={model_info.current_model_id}
-                  disabled={isRuntimeSetting || isConfigOptionBlocked('model')}
-                  onSelect={selectModel}
-                />
-              </Menu.SubMenu>
-              <Menu.SubMenu
-                key='thought-level'
-                triggerProps={RUNTIME_SUBMENU_TRIGGER_PROPS}
-                title={
-                  <RuntimeSelectorSubMenuTitle
-                    label={t('agent.thoughtLevel.label')}
-                    value={getCurrentThoughtLevelLabel(thoughtLevel)}
-                  />
-                }
-              >
-                {thoughtLevel.options.map((item) => (
-                  <Menu.Item
-                    key={item.value}
-                    className={item.value === thoughtLevel.currentValue ? 'bg-2!' : ''}
-                    onClick={() => {
-                      if (!isRuntimeSetting && !isConfigOptionBlocked(thoughtLevel.id)) {
-                        void handleThoughtLevelSelect(item.value);
-                      }
-                    }}
-                  >
-                    <RuntimeSelectorCheckedItem
-                      selected={item.value === thoughtLevel.currentValue}
-                      description={item.description}
-                    >
-                      {item.label}
-                    </RuntimeSelectorCheckedItem>
-                  </Menu.Item>
-                ))}
-              </Menu.SubMenu>
-            </>
-          ) : (
-            /* No thought level: the dropdown is the model list directly. */
-            <RuntimeSelectorModelList
-              models={model_info.available_models}
-              currentModelId={model_info.current_model_id}
-              disabled={isRuntimeSetting || isConfigOptionBlocked('model')}
-              onSelect={selectModel}
-            />
-          )}
+            <div
+              className='px-12px pt-8px pb-10px border-b border-solid border-[var(--color-border-1)]'
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className='text-11.5px font-500 text-t-tertiary mb-6px'>{t('agent.thoughtLevel.label')}</div>
+              <ThinkingEffortSlider
+                options={thoughtLevel.options}
+                value={thoughtLevel.currentValue || thoughtLevel.options[0]?.value || 'auto'}
+                disabled={isRuntimeSetting || isConfigOptionBlocked(thoughtLevel.id)}
+                onChange={(val) => {
+                  if (!isRuntimeSetting && !isConfigOptionBlocked(thoughtLevel.id)) {
+                    void handleThoughtLevelSelect(val);
+                  }
+                }}
+              />
+            </div>
+          ) : null}
+          <RuntimeSelectorModelList
+            models={model_info.available_models}
+            currentModelId={model_info.current_model_id}
+            disabled={isRuntimeSetting || isConfigOptionBlocked('model')}
+            onSelect={selectModel}
+          />
         </Menu>
       }
     >

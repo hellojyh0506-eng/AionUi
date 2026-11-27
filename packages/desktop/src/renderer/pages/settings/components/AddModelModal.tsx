@@ -4,6 +4,7 @@ import {
   type ModelOpenAiApiModeChoice,
   supportsOpenAiApiMode,
   updateModelSettings,
+  withAutoVisionModelSettings,
 } from '@/common/utils/modelCapabilities';
 import ModalHOC from '@/renderer/utils/ui/ModalHOC';
 import AionModal from '@/renderer/components/base/AionModal';
@@ -52,15 +53,18 @@ const AddModelModal = ModalHOC<{ data?: IProvider; model?: string; onSubmit: (mo
     const handleConfirm = useCallback(() => {
       if (!data || (!editingModel && !models.length)) return;
       const targetModels = editingModel ? [editingModel] : models;
+      const baseSettings = updateModelSettings(
+        data.model_settings,
+        targetModels,
+        imageInput,
+        showOpenAiApiMode ? openAiApiMode : 'auto'
+      );
       const updatedData: IProvider = {
         ...data,
         models: editingModel ? existingModels : [...existingModels, ...models],
-        model_settings: updateModelSettings(
-          data.model_settings,
-          targetModels,
-          imageInput,
-          showOpenAiApiMode ? openAiApiMode : 'auto'
-        ),
+        model_settings: editingModel
+          ? baseSettings
+          : withAutoVisionModelSettings(baseSettings, targetModels, imageInput),
       };
 
       // new-api 平台：为每个选中的模型添加协议配置 / new-api platform: add protocol config for every selected model

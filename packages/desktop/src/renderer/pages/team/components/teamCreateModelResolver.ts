@@ -12,7 +12,6 @@ const PREFERRED_AIONRS_MODELS = [
   'deepseek-v4.1-flash',
   'gpt-6.2-sol-fast',
   'claude-sonnet-5-5',
-  'gemini-3.8-flash',
   'gpt-6.2-sol',
 ];
 

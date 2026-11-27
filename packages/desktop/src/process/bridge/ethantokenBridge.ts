@@ -17,29 +17,45 @@ import type {
   EthanTokenDailyBonusState,
   EthanTokenLedgerData,
 } from '@/common/adapter/ipcBridge';
-import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type IProvider } from '@/common/config/storage';
+import {
+  BUILTIN_IMAGE_GEN_NAME,
+  BUILTIN_KNOWLEDGE_MCP_NAME,
+  type IMcpServer,
+  type IProvider,
+  type ModelSettings,
+} from '@/common/config/storage';
+import { unwrapThinkingGatewayUrl } from '@/common/utils/thinkingGatewayUrl';
+import { thinkingEffortGateway } from '../services/thinkingEffortGateway';
 import { IMAGE_GEN_ENV_KEYS } from '@/common/config/imageGenerationMcpEnv';
-import { CAPABILITY_PATTERNS } from '@/common/utils/modelCapabilities';
+import { CAPABILITY_PATTERNS, isLikelyVisionChatModel } from '@/common/utils/modelCapabilities';
 import { getBuiltinMcpScriptPath } from '../utils/initStorage';
 import { setStartOnBootEnabled } from './applicationBridge';
 import { writeCloseToTraySetting } from '../utils/closeToTraySetting';
 import { createOrUpdateTray, setCloseToTrayEnabled } from '../utils/tray';
 import type { Assistant, AssistantDetail, UpdateAssistantRequest } from '@/common/types/agent/assistantTypes';
 import type { CreateProviderRequest, UpdateProviderRequest } from '@/common/types/provider/providerApi';
+import {
+  EthanTokenCatalogCoordinator,
+  haveSameModelSet,
+  parseRemoteModelCatalogResponse,
+  sortCatalogModels,
+  type CatalogParseResult,
+  type CatalogSyncIdentity,
+} from './ethantokenCatalogSync';
 
-const ETHANTOKEN_BASE_URL = 'https://ethantoken.top';
+const ETHANTOKEN_BASE_URL = (process.env.ETHANTOKEN_BASE_URL || 'https://ethantoken.top').replace(/\/+$/, '');
 // Aionrs appends `/chat/completions` directly to provider base_url when is_full_url=false,
 // so the provider base_url must end with `/v1`. All models use `openai` protocol so both
 // OpenAI-compatible models and Claude models work cleanly on `/v1/chat/completions`.
 const ETHANTOKEN_API_BASE_URL = `${ETHANTOKEN_BASE_URL}/v1`;
 const QUOTA_PER_USD = 500000;
 const PROVIDER_NAME = 'EthanToken';
+const catalogCoordinator = new EthanTokenCatalogCoordinator();
 
 const DEFAULT_MODELS = [
   'deepseek-v4.1-flash',
   'gpt-6.2-sol-fast',
   'claude-sonnet-5-5',
-  'gemini-3.8-flash',
   'gpt-6.2-sol',
   'gpt-6.2-sol-pro',
   'gpt-6.2-astra',
@@ -52,9 +68,11 @@ const DEFAULT_MODELS = [
 
 const PREFERRED_CHAT_ORDER = [
   'deepseek-v4.1-flash',
+  'gemini-4-hydrogen',
+  'gemini-4-carbon',
+  'gemini-4-neon',
   'gpt-6.2-sol-fast',
   'claude-sonnet-5-5',
-  'gemini-3.8-flash',
   'gpt-6.2-sol',
   'deepseek-v4-pro',
   'grok-4.7',
@@ -88,6 +106,7 @@ interface StoredSession {
   models?: string[];
   providerId?: string;
   lastSyncedAt: number;
+  catalogSyncedAt?: number;
 }
 
 interface StoredAccountStore {
@@ -196,7 +215,7 @@ function mapDailyBonusPayload(raw?: DesktopDailyBonusResponse | null): EthanToke
 }
 
 function ensureEthanTokenNoProxy(): void {
-  const bypassHosts = ['ethantoken.top', '.ethantoken.top', 'api.2005716.xyz'];
+  const bypassHosts = ['ethantoken.top', '.ethantoken.top', 'api.2005716.xyz', '127.0.0.1', 'localhost'];
   const merge = (current: string | undefined): string => {
     const parts = (current || '')
       .split(',')
@@ -310,14 +329,8 @@ function toAccountState(store: StoredAccountStore, error?: string): EthanTokenAc
   };
 }
 
-function prioritizeChatModels(models: string[]): string[] {
-  const source = models.length > 0 ? models : DEFAULT_MODELS;
-  const rank = new Map(PREFERRED_CHAT_ORDER.map((m, i) => [m, i]));
-  return [...source].sort((a, b) => {
-    const ra = rank.get(a) ?? Number.MAX_SAFE_INTEGER;
-    const rb = rank.get(b) ?? Number.MAX_SAFE_INTEGER;
-    return ra - rb;
-  });
+export function prioritizeChatModels(models: string[]): string[] {
+  return sortCatalogModels(models, PREFERRED_CHAT_ORDER);
 }
 
 function pickCheapestImageModel(models: string[]): string | undefined {
@@ -418,65 +431,98 @@ async function ensureApiKey(auth: { accessToken?: string; cookie?: string; userI
   return await resolvePlainTokenKey(auth, created);
 }
 
-async function fetchUserModels(auth: { accessToken?: string; cookie?: string; userId: number }): Promise<string[]> {
+async function fetchModelsByApiKey(apiKey: string, baseUrl: string = ETHANTOKEN_BASE_URL): Promise<CatalogParseResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const res = await newApiFetch<string[]>('/api/user/models', auth);
-    if (res.json.success && Array.isArray(res.json.data) && res.json.data.length > 0) {
-      return prioritizeChatModels(res.json.data);
-    }
-  } catch {
-    // Fallback to default models
-  }
-  return prioritizeChatModels(DEFAULT_MODELS);
-}
-
-async function fetchModelsByApiKey(apiKey: string): Promise<string[] | null> {
-  try {
-    const resp = await fetch(`${ETHANTOKEN_API_BASE_URL}/models`, {
+    const apiBase = `${baseUrl.replace(/\/+$/, '')}/v1`;
+    const resp = await fetch(`${apiBase}/models`, {
       method: 'GET',
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
+      signal: controller.signal,
     });
-    if (!resp.ok) return null;
-    const data = (await resp.json()) as { data?: Array<{ id?: string }> };
-    const ids = Array.isArray(data?.data)
-      ? data.data.map((m) => (typeof m?.id === 'string' ? m.id.trim() : '')).filter(Boolean)
-      : [];
-    return ids.length > 0 ? prioritizeChatModels(ids) : null;
-  } catch {
-    return null;
+    let body: unknown = null;
+    try {
+      body = await resp.json();
+    } catch {
+      body = null;
+    }
+    return parseRemoteModelCatalogResponse(resp.status, body, PREFERRED_CHAT_ORDER);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: 'network_error',
+      authInvalid: false,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
-function haveSameModelSet(a?: string[], b?: string[]): boolean {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-  const sa = [...a].toSorted();
-  const sb = [...b].toSorted();
-  return sa.every((v, i) => v === sb[i]);
+function findManagedEthanTokenProvider(providers: IProvider[], preferredProviderId?: string): IProvider | undefined {
+  if (preferredProviderId) {
+    const byId = providers.find((p) => p.id === preferredProviderId);
+    if (byId) return byId;
+  }
+  const expectedBase = ETHANTOKEN_API_BASE_URL.replace(/\/+$/, '');
+  return providers.find(
+    (p) =>
+      p.platform === 'new-api' &&
+      (p.name === PROVIDER_NAME ||
+        unwrapThinkingGatewayUrl(p.base_url).replace(/\/+$/, '') === expectedBase ||
+        unwrapThinkingGatewayUrl(p.base_url).includes('ethantoken.top'))
+  );
 }
 
-async function upsertEthanTokenProvider(apiKey: string, models: string[]): Promise<string> {
+function buildEthanTokenModelSettings(
+  models: string[],
+  existingSettings?: Record<string, ModelSettings>
+): Record<string, ModelSettings> {
+  const next: Record<string, ModelSettings> = Object.assign({}, existingSettings || {});
+  for (const model of models) {
+    if (isLikelyVisionChatModel(model) && !next[model]?.image_input) {
+      next[model] = Object.assign({}, next[model], { image_input: 'supported' as const });
+    }
+  }
+  return next;
+}
+
+function hasMissingVisionModelSettings(
+  models: string[],
+  existingSettings?: Record<string, ModelSettings>
+): boolean {
+  return models.some((model) => isLikelyVisionChatModel(model) && !existingSettings?.[model]?.image_input);
+}
+
+async function upsertEthanTokenProvider(
+  apiKey: string,
+  models: string[],
+  preferredProviderId?: string
+): Promise<string> {
   const existingList = (await httpRequest<IProvider[]>('GET', '/api/providers')) || [];
-  const existing = existingList.find(
-    (p) => p.platform === 'new-api' && (p.name === PROVIDER_NAME || p.base_url.includes('ethantoken.top'))
-  );
+  const existing = findManagedEthanTokenProvider(existingList, preferredProviderId);
 
   const modelProtocols: Record<string, string> = {};
   for (const m of models) {
     modelProtocols[m] = 'openai';
   }
+  const modelSettings = buildEthanTokenModelSettings(models, existing?.model_settings);
+  const providerBaseUrl = thinkingEffortGateway.wrapUrlIfActive(ETHANTOKEN_API_BASE_URL);
 
   if (existing) {
     const updateBody: UpdateProviderRequest = {
-      name: PROVIDER_NAME,
+      name: existing.name || PROVIDER_NAME,
       platform: 'new-api',
-      base_url: ETHANTOKEN_API_BASE_URL,
+      base_url: providerBaseUrl,
       api_key: apiKey,
-      models,
+      models: [...models],
       model_protocols: modelProtocols,
-      enabled: true,
+      model_settings: modelSettings,
+      enabled: existing.enabled !== false,
     };
     const updated = await httpRequest<IProvider>('PUT', `/api/providers/${existing.id}`, updateBody);
     return updated?.id || existing.id;
@@ -485,14 +531,52 @@ async function upsertEthanTokenProvider(apiKey: string, models: string[]): Promi
   const createBody: CreateProviderRequest = {
     name: PROVIDER_NAME,
     platform: 'new-api',
-    base_url: ETHANTOKEN_API_BASE_URL,
+    base_url: providerBaseUrl,
     api_key: apiKey,
-    models,
+    models: [...models],
     model_protocols: modelProtocols,
+    model_settings: modelSettings,
     enabled: true,
   };
   const created = await httpRequest<IProvider>('POST', '/api/providers', createBody);
   return created.id;
+}
+
+async function syncManagedEthanTokenCatalog(params: {
+  userId: number;
+  apiKey: string;
+  baseUrl?: string;
+  preferredProviderId?: string;
+  fallbackSnapshot?: readonly string[];
+}) {
+  const identity: CatalogSyncIdentity = {
+    baseUrl: (params.baseUrl || ETHANTOKEN_BASE_URL).replace(/\/+$/, ''),
+    userId: params.userId,
+    apiKey: params.apiKey,
+  };
+  return catalogCoordinator.sync(identity, params.fallbackSnapshot, {
+    fetchCatalog: (id) => fetchModelsByApiKey(id.apiKey, id.baseUrl),
+    readCurrentProviderModels: async (id) => {
+      const providers = (await httpRequest<IProvider[]>('GET', '/api/providers')) || [];
+      const existing = findManagedEthanTokenProvider(providers, params.preferredProviderId);
+      const expectedWrappedBase = thinkingEffortGateway.wrapUrlIfActive(ETHANTOKEN_API_BASE_URL);
+      const needsRepair =
+        !existing ||
+        !existing.api_key ||
+        existing.api_key.includes('*') ||
+        unwrapThinkingGatewayUrl(existing.base_url) !== ETHANTOKEN_API_BASE_URL ||
+        existing.base_url !== expectedWrappedBase ||
+        existing.model_protocols?.['claude-sonnet-5-5'] === 'anthropic' ||
+        existing.api_key !== id.apiKey ||
+        hasMissingVisionModelSettings(existing.models || [], existing.model_settings);
+      return {
+        providerId: existing?.id,
+        models: existing ? (Array.isArray(existing.models) ? existing.models : []) : undefined,
+        needsRepair,
+      };
+    },
+    writeProviderModels: (id, models) => upsertEthanTokenProvider(id.apiKey, models, params.preferredProviderId),
+  });
 }
 
 async function ensureImageGenerationConfigured(providerId: string, apiKey: string, models: string[]): Promise<void> {
@@ -613,8 +697,16 @@ async function applyAuthorizedPayload(payload: DesktopAuthCallbackPayload): Prom
     throw new Error('授权回调未包含有效明文 API 密钥');
   }
   const normalizedKey = rawKey.startsWith('sk-') ? rawKey : `sk-${rawKey}`;
-  const models = prioritizeChatModels(Array.isArray(payload.models) ? payload.models : DEFAULT_MODELS);
   const userId = Number(payload.userId);
+  const fallbackModels = Array.isArray(payload.models)
+    ? prioritizeChatModels(payload.models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0))
+    : undefined;
+
+  catalogCoordinator.setActiveIdentity({
+    baseUrl: ETHANTOKEN_BASE_URL,
+    userId,
+    apiKey: normalizedKey,
+  });
 
   let desktopMeta: NewApiUser | null = null;
   try {
@@ -628,6 +720,20 @@ async function applyAuthorizedPayload(payload: DesktopAuthCallbackPayload): Prom
   } catch {
     // ignore metadata fetch failure on login callback
   }
+
+  const syncRes = await syncManagedEthanTokenCatalog({
+    userId,
+    apiKey: normalizedKey,
+    baseUrl: ETHANTOKEN_BASE_URL,
+    fallbackSnapshot: fallbackModels,
+  });
+
+  const models = syncRes.status === 'synced' ? syncRes.models : fallbackModels ?? [];
+  let providerId = syncRes.providerId;
+  if (!providerId) {
+    providerId = await upsertEthanTokenProvider(normalizedKey, models);
+  }
+  await ensureImageGenerationConfigured(providerId, normalizedKey, models);
 
   const dailyBonus = mapDailyBonusPayload(desktopMeta?.daily_bonus);
   const session: StoredSession = {
@@ -661,12 +767,11 @@ async function applyAuthorizedPayload(payload: DesktopAuthCallbackPayload): Prom
     dailyBonus,
     apiKey: normalizedKey,
     models,
+    providerId,
     lastSyncedAt: Date.now(),
+    catalogSyncedAt: syncRes.catalogSyncedAt,
   };
 
-  const providerId = await upsertEthanTokenProvider(normalizedKey, models);
-  await ensureImageGenerationConfigured(providerId, normalizedKey, models);
-  session.providerId = providerId;
   return upsertAccountInStore(session, true);
 }
 
@@ -889,11 +994,32 @@ description: EthanToken 官方生图（含文生图、参考图/图生图编辑�
 - 成片保存到当前工作区后，最终回复中**必须**附带相对路径 Markdown 图片语法（例如 \`![成片描述](output.png)\`），不要写 \`C:\\\` 绝对路径。
 `;
 
+const ETHANTOKEN_KNOWLEDGE_CURATOR_SKILL_MD = `---
+name: ethantoken-knowledge-curator
+description: EthanToken 本地知识空间智能管家技能。当用户希望从某个本地文件夹中筛选特定类型资料（如 .md/.docx/.xlsx/.txt）并沉淀为客户端知识空间、生成知识导图或进行费曼学习梳理时激活。
+---
+
+# EthanToken 本地知识空间整理与助学规范
+
+## 1. 一键整理并导入本地知识空间（严禁全盘乱塞源码和无关文件）
+当用户指定了一个本地文件夹并希望将其整理成知识空间时，按以下 3 步执行：
+1. **先盘点目录文件分布**：调用内置 MCP 工具 \`knowledge_scan_folder({ folderPath })\`，查看各扩展名文件数量与样例路径。
+2. **智能筛选与确认**：
+   - 若用户明确指定了后缀（如只要 \`.md\` 或 \`.docx\`），按用户指定筛选；
+   - 若未指定，优先推荐笔记/文档类（\`.md\`、\`.mdx\`、\`.txt\`、\`.docx\`、\`.xlsx\`），自动排除源码（\`.js\`/\`.cs\`/\`.ts\`）、构建产物与 JSON 数据文件；如有明显歧义先向用户简短确认。
+3. **建库落地**：调用 \`knowledge_create_or_add({ name, description, sourcePaths: [folderPath], allowedExtensions })\` 完成精准建库，并告知用户现在可在对话里用 \`@知识库:<名称>\` 或左下角知识库按钮随时引用。
+
+## 2. AI 助学模式（对标 NotebookLM / Study Mode）
+- 梳理知识框架时，给出分级目录、核心概念关联与学习路线，并附引用文档相对路径；
+- 开展费曼互动教学时，每次只讲 1 个核心模块，穿插 1 个启发式检验提问，根据用户回答再推进下一阶段，不要一次性倾倒长篇讲义；
+- 进行出题自测时，围绕真实索引文档生成 5 道有区分度的思考题/实践题，等待用户作答后再逐题点评。
+`;
+
 let skillFileWritten = false;
 let skillAttachPromise: Promise<void> | null = null;
 
 function getSkillAttachmentStatePath(): string {
-  return path.join(app.getPath('userData'), 'ethantoken-skill-attachments.json');
+  return path.join(app.getPath('userData'), 'ethantoken-skill-attachments-v2.json');
 }
 
 function readHandledSkillAssistantIds(): Set<string> {
@@ -936,6 +1062,9 @@ async function attachEthanTokenSkillToAssistants(): Promise<void> {
       const enabledImageGenId = (mcpServers || []).find(
         (s) => s.name === BUILTIN_IMAGE_GEN_NAME && s.enabled
       )?.id;
+      const enabledKnowledgeMcpId = (mcpServers || []).find(
+        (s) => s.name === BUILTIN_KNOWLEDGE_MCP_NAME && s.enabled
+      )?.id;
       const handledIds = readHandledSkillAssistantIds();
       let changed = false;
 
@@ -951,21 +1080,22 @@ async function attachEthanTokenSkillToAssistants(): Promise<void> {
             );
             const currentSkillIds = detail?.defaults?.skills?.value ?? detail?.capabilities?.default_skill_ids ?? [];
             const currentMcpIds = detail?.defaults?.mcps?.value ?? [];
-            const nextSkillIds = Array.from(new Set([...currentSkillIds, 'ethantoken-media']));
-            const nextMcpIds = enabledImageGenId
-              ? Array.from(new Set([...currentMcpIds, enabledImageGenId]))
-              : currentMcpIds;
+            const nextSkillIds = Array.from(
+              new Set([...currentSkillIds, 'ethantoken-media', 'ethantoken-knowledge-curator'])
+            );
+            const extraMcps = [enabledImageGenId, enabledKnowledgeMcpId].filter((id): id is string => Boolean(id));
+            const nextMcpIds = extraMcps.length > 0 ? Array.from(new Set([...currentMcpIds, ...extraMcps])) : currentMcpIds;
             const builtinPayload: UpdateAssistantRequest = {
               id: assistant.id,
               agent_id: detail?.engine?.agent_id || assistant.agent_id || undefined,
               defaults: {
                 skills: { mode: 'fixed', value: nextSkillIds },
-                ...(enabledImageGenId ? { mcps: { mode: 'fixed', value: nextMcpIds } } : {}),
+                ...(extraMcps.length > 0 ? { mcps: { mode: 'fixed', value: nextMcpIds } } : {}),
               },
             };
             await httpRequest<Assistant>('PUT', `/api/assistants/${encodeURIComponent(assistant.id)}`, builtinPayload);
-            // Keep builtin assistants eligible until image-gen MCP is also attached after sign-in.
-            if (enabledImageGenId) {
+            // Keep builtin assistants eligible until both image-gen and knowledge MCPs are attached.
+            if (enabledImageGenId && enabledKnowledgeMcpId) {
               handledIds.add(assistant.id);
               changed = true;
             }
@@ -976,7 +1106,7 @@ async function attachEthanTokenSkillToAssistants(): Promise<void> {
         }
 
         const existingSkills = assistant.enabled_skills ?? [];
-        if (existingSkills.includes('ethantoken-media')) {
+        if (existingSkills.includes('ethantoken-media') && existingSkills.includes('ethantoken-knowledge-curator')) {
           handledIds.add(assistant.id);
           changed = true;
           continue;
@@ -984,7 +1114,7 @@ async function attachEthanTokenSkillToAssistants(): Promise<void> {
 
         const updatePayload: UpdateAssistantRequest = {
           id: assistant.id,
-          enabled_skills: Array.from(new Set([...existingSkills, 'ethantoken-media'])),
+          enabled_skills: Array.from(new Set([...existingSkills, 'ethantoken-media', 'ethantoken-knowledge-curator'])),
         };
         try {
           await httpRequest<Assistant>('PUT', `/api/assistants/${encodeURIComponent(assistant.id)}`, updatePayload);
@@ -1012,12 +1142,16 @@ async function ensureEthanTokenSkillInstalled(): Promise<void> {
     if (!skillFileWritten) {
       const paths = await httpRequest<{ user_skills_dir?: string }>('GET', '/api/skills/paths');
       if (!paths?.user_skills_dir) return;
-      const skillDir = path.join(paths.user_skills_dir, 'ethantoken-media');
-      const skillFile = path.join(skillDir, 'SKILL.md');
-      fs.mkdirSync(skillDir, { recursive: true });
-      if (!fs.existsSync(skillFile) || fs.readFileSync(skillFile, 'utf-8') !== ETHANTOKEN_MEDIA_SKILL_MD) {
-        fs.writeFileSync(skillFile, ETHANTOKEN_MEDIA_SKILL_MD, 'utf-8');
-      }
+      const writeBuiltinSkill = (skillName: string, content: string) => {
+        const skillDir = path.join(paths.user_skills_dir!, skillName);
+        const skillFile = path.join(skillDir, 'SKILL.md');
+        fs.mkdirSync(skillDir, { recursive: true });
+        if (!fs.existsSync(skillFile) || fs.readFileSync(skillFile, 'utf-8') !== content) {
+          fs.writeFileSync(skillFile, content, 'utf-8');
+        }
+      };
+      writeBuiltinSkill('ethantoken-media', ETHANTOKEN_MEDIA_SKILL_MD);
+      writeBuiltinSkill('ethantoken-knowledge-curator', ETHANTOKEN_KNOWLEDGE_CURATOR_SKILL_MD);
       skillFileWritten = true;
     }
     await attachEthanTokenSkillToAssistants();
@@ -1065,15 +1199,19 @@ export function initEthanTokenBridge(): void {
     }
     try {
       let apiKey = target.apiKey;
-      let models = prioritizeChatModels(target.models || DEFAULT_MODELS);
       if ((!apiKey || apiKey.includes('*')) && target.accessToken) {
         const auth = { accessToken: target.accessToken, cookie: target.cookie, userId: target.userId };
         apiKey = await ensureApiKey(auth);
-        models = await fetchUserModels(auth);
       }
       if (!apiKey || apiKey.includes('*')) {
         return toAccountState(store, '该账号缺少有效密钥，请通过浏览器重新授权');
       }
+
+      catalogCoordinator.setActiveIdentity({
+        baseUrl: target.baseUrl || ETHANTOKEN_BASE_URL,
+        userId: target.userId,
+        apiKey,
+      });
 
       let desktopMeta: NewApiUser | null = null;
       try {
@@ -1086,6 +1224,30 @@ export function initEthanTokenBridge(): void {
         }
       } catch {
         // ignore transient desktop quota fetch error when switching accounts
+      }
+
+      const syncRes = await syncManagedEthanTokenCatalog({
+        userId: target.userId,
+        apiKey,
+        baseUrl: target.baseUrl || ETHANTOKEN_BASE_URL,
+        preferredProviderId: target.providerId,
+        fallbackSnapshot: Array.isArray(target.models) ? target.models : undefined,
+      });
+      if (syncRes.discarded) {
+        return toAccountState(readAccountStore());
+      }
+
+      const models = syncRes.status === 'synced' ? syncRes.models : Array.isArray(target.models) ? target.models : [];
+      let providerId = syncRes.providerId;
+      if (!providerId || !syncRes.providerWritten) {
+        // When switching accounts and the live fetch failed, still bind the provider to target's apiKey & snapshot
+        const providers = (await httpRequest<IProvider[]>('GET', '/api/providers')) || [];
+        const existing = findManagedEthanTokenProvider(providers, target.providerId);
+        if (!existing || existing.api_key !== apiKey || !haveSameModelSet(existing.models, models)) {
+          providerId = await upsertEthanTokenProvider(apiKey, models, target.providerId);
+        } else {
+          providerId = existing.id;
+        }
       }
 
       const nextBonus = desktopMeta?.daily_bonus ? mapDailyBonusPayload(desktopMeta.daily_bonus) : target.dailyBonus;
@@ -1108,11 +1270,11 @@ export function initEthanTokenBridge(): void {
         dailyBonus: nextBonus,
         apiKey,
         models,
+        providerId,
         lastSyncedAt: Date.now(),
+        catalogSyncedAt: syncRes.catalogSyncedAt ?? target.catalogSyncedAt,
       };
-      const providerId = await upsertEthanTokenProvider(apiKey, models);
       await ensureImageGenerationConfigured(providerId, apiKey, models);
-      updated.providerId = providerId;
 
       const nextStore = upsertAccountInStore(updated, true);
       void ensureEthanTokenSkillInstalled();
@@ -1131,17 +1293,20 @@ export function initEthanTokenBridge(): void {
     }
     try {
       const providers = (await httpRequest<IProvider[]>('GET', '/api/providers')) || [];
-      const existing = providers.find(
-        (p) => p.platform === 'new-api' && (p.name === PROVIDER_NAME || p.base_url.includes('ethantoken.top'))
-      );
+      const existing = findManagedEthanTokenProvider(providers, current.providerId);
 
+      // Keep user/self isolated so transient account-profile failures never skip catalog sync.
       let selfRes: { json: { success: boolean; message?: string; data?: NewApiUser }; status: number } | null = null;
       if (current.accessToken) {
-        selfRes = await newApiFetch<NewApiUser>('/api/user/self', {
-          accessToken: current.accessToken,
-          cookie: current.cookie,
-          userId: current.userId,
-        });
+        try {
+          selfRes = await newApiFetch<NewApiUser>('/api/user/self', {
+            accessToken: current.accessToken,
+            cookie: current.cookie,
+            userId: current.userId,
+          });
+        } catch {
+          selfRes = null;
+        }
       }
 
       let validUser = selfRes && selfRes.status !== 401 && selfRes.json.success ? selfRes.json.data : null;
@@ -1149,6 +1314,10 @@ export function initEthanTokenBridge(): void {
       let apiKey = current.apiKey;
       if ((!apiKey || apiKey.includes('*')) && existing?.api_key && !existing.api_key.includes('*')) {
         apiKey = existing.api_key;
+      }
+      if ((!apiKey || apiKey.includes('*')) && validUser && current.accessToken) {
+        const auth = { accessToken: current.accessToken, cookie: current.cookie, userId: validUser.id };
+        apiKey = await ensureApiKey(auth);
       }
 
       // Always consult /api/desktop/quota with permanent apiKey so aff_code and daily_bonus stay fresh
@@ -1172,33 +1341,32 @@ export function initEthanTokenBridge(): void {
 
       const nextDailyBonus = desktopMeta?.daily_bonus ? mapDailyBonusPayload(desktopMeta.daily_bonus) : current.dailyBonus;
 
-      let needsProviderRepair =
-        !existing ||
-        !existing.api_key ||
-        existing.api_key.includes('*') ||
-        existing.base_url !== ETHANTOKEN_API_BASE_URL ||
-        existing.model_protocols?.['claude-sonnet-5-5'] === 'anthropic' ||
-        Boolean(apiKey && existing.api_key !== apiKey);
-
       let providerId = existing?.id || current.providerId;
-      let models = prioritizeChatModels(current.models || existing?.models || DEFAULT_MODELS);
+      let models = Array.isArray(existing?.models)
+        ? existing.models
+        : Array.isArray(current.models)
+          ? current.models
+          : [];
+      let catalogSyncedAt = current.catalogSyncedAt;
+      let catalogAuthInvalid = false;
 
       if (apiKey && !apiKey.includes('*')) {
-        const liveModels = await fetchModelsByApiKey(apiKey);
-        if (liveModels && liveModels.length > 0 && !haveSameModelSet(existing?.models, liveModels)) {
-          models = liveModels;
-          needsProviderRepair = true;
+        const syncRes = await syncManagedEthanTokenCatalog({
+          userId: current.userId,
+          apiKey,
+          baseUrl: current.baseUrl || ETHANTOKEN_BASE_URL,
+          preferredProviderId: providerId,
+          fallbackSnapshot: models,
+        });
+        if (syncRes.discarded) {
+          return toAccountState(readAccountStore());
         }
-      }
-
-      if (needsProviderRepair) {
-        if ((!apiKey || apiKey.includes('*')) && validUser && current.accessToken) {
-          const auth = { accessToken: current.accessToken, cookie: current.cookie, userId: validUser.id };
-          apiKey = await ensureApiKey(auth);
-          models = await fetchUserModels(auth);
-        }
-        if (apiKey && !apiKey.includes('*')) {
-          providerId = await upsertEthanTokenProvider(apiKey, models);
+        if (syncRes.status === 'synced') {
+          models = syncRes.models;
+          providerId = syncRes.providerId || providerId;
+          catalogSyncedAt = syncRes.catalogSyncedAt ?? catalogSyncedAt;
+        } else if (syncRes.status === 'auth_invalid') {
+          catalogAuthInvalid = true;
         }
       }
 
@@ -1206,6 +1374,11 @@ export function initEthanTokenBridge(): void {
         await ensureImageGenerationConfigured(providerId, apiKey, models);
       }
       void ensureEthanTokenSkillInstalled();
+
+      const latestStore = readAccountStore();
+      if (latestStore.activeUserId !== current.userId) {
+        return toAccountState(latestStore);
+      }
 
       const quotaSource = desktopMeta || validUser;
       const updated: StoredSession = {
@@ -1229,10 +1402,11 @@ export function initEthanTokenBridge(): void {
         models,
         providerId,
         lastSyncedAt: Date.now(),
+        catalogSyncedAt,
       };
       const nextStore = upsertAccountInStore(updated, true);
 
-      if (!validUser) {
+      if (catalogAuthInvalid || !validUser) {
         return toAccountState(nextStore, '登录态已过期');
       }
       return toAccountState(nextStore);
@@ -1318,6 +1492,7 @@ export function initEthanTokenBridge(): void {
   });
 
   ipcBridge.ethantoken.logout.provider(async () => {
+    catalogCoordinator.invalidate();
     const store = readAccountStore();
     if (store.activeUserId) {
       store.accounts = store.accounts.filter((a) => a.userId !== store.activeUserId);

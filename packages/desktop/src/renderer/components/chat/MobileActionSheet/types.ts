@@ -18,6 +18,8 @@ export interface MobileActionSheetSubMenu {
   options: MobileActionSheetOption[];
   onSelect: (key: string) => void;
   emptyText?: ReactNode;
+  /** Optional custom widget rendered above option rows (e.g. inline thinking effort slider) */
+  customContent?: ReactNode;
   /** When false, options behave as plain action rows (no radio). Default: true. */
   selectable?: boolean;
   /**

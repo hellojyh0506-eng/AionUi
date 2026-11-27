@@ -19,6 +19,8 @@ import { parseDiff } from '@/renderer/utils/file/diffUtils';
 import MessageFileChanges from '../MessageFileChanges';
 import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
 import LocalImageView from '@renderer/components/media/LocalImageView';
+import McpAppWidget from '@renderer/components/mcp/McpAppWidget';
+import { useMcpAppRegistry } from '@renderer/hooks/mcp/useMcpAppRegistry';
 import MarkdownView from '@renderer/components/Markdown';
 import { ToolConfirmationOutcome } from '@renderer/utils/common';
 import { ImagePreviewContext } from '../MessageList';
@@ -455,6 +457,7 @@ const ToolResultDisplay: React.FC<{
 
 const MessageToolGroup: React.FC<IMessageToolGroupProps> = ({ message }) => {
   const { t } = useTranslation();
+  const { resolveMcpAppForTool } = useMcpAppRegistry();
 
   // 收集所有 WriteFile 结果用于汇总显示 / Collect all WriteFile results for summary display
   const writeFileResults = useMemo(() => {
@@ -581,6 +584,19 @@ const MessageToolGroup: React.FC<IMessageToolGroupProps> = ({ message }) => {
                     <ToolResultDisplay content={content} />
                   </div>
                 )}
+                {status === 'Success' &&
+                  (() => {
+                    const rawOut =
+                      typeof result_display === 'string'
+                        ? result_display
+                        : result_display
+                          ? JSON.stringify(result_display)
+                          : undefined;
+                    const mcpTarget = resolveMcpAppForTool(name, rawOut);
+                    return mcpTarget ? (
+                      <McpAppWidget target={mcpTarget} rawInput={description} rawOutput={rawOut} />
+                    ) : null;
+                  })()}
                 {status === 'Error' && (
                   <div className='mt-4px flex justify-end'>
                     <ButlerDiagnoseButton

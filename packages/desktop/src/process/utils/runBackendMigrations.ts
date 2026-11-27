@@ -5,6 +5,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import * as path from 'node:path';
 import { migrateConfigStorage, migrateLegacyMcpConfigToDb, migrateProviders } from '@/common/config/configMigration';
 import { httpRequest } from '@/common/adapter/httpBridge';
 import { mcpService } from '@/common/adapter/ipcBridge';
@@ -15,9 +16,12 @@ import {
   resolveImageGenerationMcpEnv,
   type ImageGenerationMcpEnvResolveResult,
 } from '@/common/config/imageGenerationMcpEnv';
-import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type IProvider } from '@/common/config/storage';
+import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type IProvider, type ModelSettings } from '@/common/config/storage';
+import { isLikelyVisionChatModel } from '@/common/utils/modelCapabilities';
+import { BUILTIN_KNOWLEDGE_MCP_NAME, BUILTIN_KNOWLEDGE_SCRIPT } from '../resources/builtinMcp/constants';
 import { getBuiltinMcpScriptPath, type ProcessConfig as ProcessConfigType } from './initStorage';
 import { migrateAssistantsToBackend } from './migrateAssistants';
+import { getDataPath } from './utils';
 
 type ConfigFile = typeof ProcessConfigType;
 type MigrationStepResult = boolean;
@@ -200,6 +204,33 @@ function buildBuiltinBrowserServer(): McpImportServer {
   };
 }
 
+function buildBuiltinKnowledgeServer(): McpImportServer {
+  const scriptPath = getBuiltinMcpScriptPath(BUILTIN_KNOWLEDGE_SCRIPT);
+  const knowledgeDir = path.join(getDataPath(), 'knowledge');
+  const serverConfig = {
+    command: 'node',
+    args: [scriptPath],
+    env: {
+      AIONUI_KNOWLEDGE_DIR: knowledgeDir,
+    },
+  };
+
+  return {
+    name: BUILTIN_KNOWLEDGE_MCP_NAME,
+    description:
+      'Built-in local Knowledge Base MCP server: search indexed local folders/files (Markdown, DOCX, XLSX, TXT, code) and render interactive search result cards.',
+    enabled: true,
+    builtin: true,
+    transport: {
+      type: 'stdio',
+      command: serverConfig.command,
+      args: serverConfig.args,
+      env: serverConfig.env,
+    },
+    original_json: JSON.stringify({ mcpServers: { [BUILTIN_KNOWLEDGE_MCP_NAME]: serverConfig } }, null, 2),
+  };
+}
+
 function buildDefaultMcpServers(): McpImportServer[] {
   const chromeConfig = {
     command: 'npx',
@@ -220,6 +251,7 @@ function buildDefaultMcpServers(): McpImportServer[] {
       original_json: JSON.stringify({ mcpServers: { [BUILTIN_CHROME_DEVTOOLS_NAME]: chromeConfig } }, null, 2),
     },
     buildBuiltinBrowserServer(),
+    buildBuiltinKnowledgeServer(),
   ];
 }
 
@@ -434,6 +466,25 @@ async function ensureBootstrapMcpServersInDb(configFile: ConfigFile): Promise<vo
     }
   }
 
+  const existingKnowledgeServer = existing.find((server) => server.name === BUILTIN_KNOWLEDGE_MCP_NAME);
+  if (existingKnowledgeServer) {
+    const desiredKnowledgeServer = buildBuiltinKnowledgeServer();
+    const knowledgeTransportChanged = !isSameStdioTransport(
+      existingKnowledgeServer.transport,
+      desiredKnowledgeServer.transport
+    );
+    const knowledgeJsonChanged = existingKnowledgeServer.original_json !== desiredKnowledgeServer.original_json;
+    if (knowledgeTransportChanged || knowledgeJsonChanged) {
+      await mcpService.updateServer.invoke({
+        id: existingKnowledgeServer.id,
+        data: {
+          transport: desiredKnowledgeServer.transport,
+          original_json: desiredKnowledgeServer.original_json,
+        },
+      });
+    }
+  }
+
   console.info(
     '[Migration] MCP bootstrap completed, imported %d missing defaults, updated image server: %s, updated browser server: %s, image config source: %s, image enabled: %s',
     missing.length,
@@ -441,6 +492,33 @@ async function ensureBootstrapMcpServersInDb(configFile: ConfigFile): Promise<vo
     browserServerUpdated ? 'yes' : 'no',
     imageConfigSource,
     imageConfig?.switch === true ? 'yes' : 'no'
+  );
+}
+
+async function ensureVisionModelSettingsInDb(): Promise<void> {
+  const providers = (await httpRequest<IProvider[]>('GET', '/api/providers').catch((): IProvider[] => [])) || [];
+  await Promise.all(
+    providers.map(async (provider) => {
+      const models = Array.isArray(provider.models) ? provider.models : [];
+      if (models.length === 0) return;
+
+      const existing = provider.model_settings || {};
+      let changed = false;
+      const nextSettings: Record<string, ModelSettings> = Object.assign({}, existing);
+      for (const model of models) {
+        if (isLikelyVisionChatModel(model) && !nextSettings[model]?.image_input) {
+          nextSettings[model] = Object.assign({}, nextSettings[model], { image_input: 'supported' as const });
+          changed = true;
+        }
+      }
+      if (!changed) return;
+
+      await httpRequest<IProvider>('PUT', `/api/providers/${encodeURIComponent(provider.id)}`, {
+        model_settings: nextSettings,
+      }).catch((error) => {
+        console.warn('[Migration] Failed to backfill vision model_settings for provider %s', provider.id, error);
+      });
+    })
   );
 }
 
@@ -454,6 +532,7 @@ const MIGRATION_STEPS: Array<{
   },
   { name: 'migrateConfigStorage', run: async (configFile) => (await migrateConfigStorage(configFile), true) },
   { name: 'migrateProviders', run: async (configFile) => (await migrateProviders(configFile), true) },
+  { name: 'ensureVisionModelSettingsInDb', run: async () => (await ensureVisionModelSettingsInDb(), true) },
   {
     name: 'ensureBootstrapMcpServersInDb',
     run: async (configFile) => (await ensureBootstrapMcpServersInDb(configFile), true),

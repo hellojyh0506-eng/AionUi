@@ -14,6 +14,9 @@ import { initWebuiBridge } from './webuiBridge';
 import { initThemeBridge } from './themeBridge';
 import { initEthanTokenBridge } from './ethantokenBridge';
 import { initEcosystemBridge } from './ecosystemBridge';
+import { initKnowledgeBridge } from './knowledgeBridge';
+import { initMcpAppsBridge } from './mcpAppsBridge';
+import { initThinkingEffortBridge } from './thinkingEffortBridge';
 
 export type BridgeDependencies = Record<string, never>;
 
@@ -28,6 +31,9 @@ export function initAllBridges(_deps: BridgeDependencies = {}): void {
   initThemeBridge();
   initEthanTokenBridge();
   initEcosystemBridge();
+  initKnowledgeBridge();
+  initMcpAppsBridge();
+  initThinkingEffortBridge();
 }
 
 export {
@@ -35,9 +41,12 @@ export {
   initDialogBridge,
   initEcosystemBridge,
   initEthanTokenBridge,
+  initKnowledgeBridge,
+  initMcpAppsBridge,
   initNotificationBridge,
   initSystemSettingsBridge,
   initThemeBridge,
+  initThinkingEffortBridge,
   initUpdateBridge,
   initWindowControlsBridge,
   initWebuiBridge,

@@ -394,6 +394,11 @@ function markBackendReady(backendPort: number, source: string): void {
   broadcastBackendStartupState(null);
   void ensureAdminUserOnce(backendPort);
   scheduleBackendMigrations();
+  void import('./process/services/thinkingEffortGateway')
+    .then(({ thinkingEffortGateway }) => thinkingEffortGateway.reconcileProvidersWithBackend())
+    .catch((err) => {
+      console.warn('[ThinkingEffortGateway] Failed to reconcile providers on backend ready:', err);
+    });
 }
 
 function resolveDebugBackendStartupFailure(): BackendStartupFailureInfo | null {
@@ -553,6 +558,9 @@ const createWindow = ({ showOnReady = true }: { showOnReady?: boolean } = {}): v
         const statusBroadcast = createAutoUpdateStatusBroadcast();
         autoUpdaterService.initialize(statusBroadcast);
         autoUpdaterService.setBeforeQuitAndInstall(async () => {
+          await import('./process/services/thinkingEffortGateway')
+            .then(({ thinkingEffortGateway }) => thinkingEffortGateway.restoreProvidersBeforeQuit())
+            .catch((): undefined => undefined);
           await backendManager.stop();
         });
         // Check for updates after 3 seconds delay. Skipped in the discontinued
@@ -815,6 +823,14 @@ const handleAppReady = async (): Promise<void> => {
     }
   }
 
+  try {
+    const { thinkingEffortGateway } = await import('./process/services/thinkingEffortGateway');
+    const gwInfo = await thinkingEffortGateway.start();
+    console.log(`[ThinkingEffortGateway] listening on 127.0.0.1:${gwInfo.port}`);
+  } catch (error) {
+    console.warn('[ThinkingEffortGateway] Failed to start loopback gateway:', error);
+  }
+
   const debugBackendStartupFailure = resolveDebugBackendStartupFailure();
   if (debugBackendStartupFailure) {
     applyDebugBackendStartupFailure(debugBackendStartupFailure);
@@ -833,6 +849,8 @@ const handleAppReady = async (): Promise<void> => {
         const { getDataPath } = await import('./process/utils/utils');
         const { getSystemDir } = await import('./process/utils/initStorage');
         const dataPath = getDataPath();
+        const { bootstrapRuntimePathEnv } = await import('./process/services/ecosystem/runtimeEnvironment');
+        bootstrapRuntimePathEnv(dataPath);
         const memoryDir = path.join(dataPath, 'memory');
         fs.mkdirSync(memoryDir, { recursive: true });
         if (!process.env.AIONRS_MEMORY_DIR) {
@@ -898,6 +916,11 @@ const handleAppReady = async (): Promise<void> => {
     const bootBackendPort = (globalThis as typeof globalThis & { __backendPort?: number }).__backendPort;
     if (backendStartedOk && bootBackendPort) {
       await ensureAdminUserOnce(bootBackendPort);
+      await import('./process/services/thinkingEffortGateway')
+        .then(({ thinkingEffortGateway }) => thinkingEffortGateway.reconcileProvidersWithBackend())
+        .catch((err) => {
+          console.warn('[ThinkingEffortGateway] Startup provider reconciliation skipped:', err);
+        });
     }
   }
 
@@ -1164,9 +1187,14 @@ installQuitCleanup({
     disposeCronResumeListener?.();
     disposeCronResumeListener = null;
   },
-  // Stop aioncore subprocess — backend shutdown kills all agent children
-  // transitively (no separate frontend workerTaskManager remains).
-  stopBackend: () => backendManager.stop(),
+  // Stop aioncore subprocess — restore wrapped provider URLs before stopping backend
+  // so persisted database rows remain clean across restarts/upgrades.
+  stopBackend: async () => {
+    await import('./process/services/thinkingEffortGateway')
+      .then(({ thinkingEffortGateway }) => thinkingEffortGateway.restoreProvidersBeforeQuit())
+      .catch((): undefined => undefined);
+    await backendManager.stop();
+  },
   destroyPetWindow: async () => {
     const { destroyPetWindow } = await import('./process/pet/petManager');
     destroyPetWindow();
@@ -1177,6 +1205,9 @@ installQuitCleanup({
 });
 
 app.on('will-quit', () => {
+  void import('./process/services/mcpApps/mcpAppHostService')
+    .then(({ closeAllMcpAppClients }) => closeAllMcpAppClients())
+    .catch((): undefined => undefined);
   console.log('[AionUi] will-quit — all cleanup should be complete');
 });
 

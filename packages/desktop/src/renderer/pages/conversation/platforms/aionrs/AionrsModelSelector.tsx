@@ -8,13 +8,10 @@ import type { AionrsModelSelection } from './useAionrsModelSelection';
 import type { AcpConfigSetStatus, AcpDerivedOption } from '@/renderer/hooks/agent/useAcpConfigOptions';
 import {
   composeRuntimeSelectorLabel,
-  getCurrentThoughtLevelLabel,
-  RUNTIME_SUBMENU_TRIGGER_PROPS,
-  RuntimeSelectorCheckedItem,
   RuntimeSelectorModelList,
   type RuntimeSelectorModelGroup,
-  RuntimeSelectorSubMenuTitle,
 } from '@/renderer/components/agent/runtimeSelectorOptions';
+import { ThinkingEffortSlider } from '@/renderer/components/agent/ThinkingEffortSlider';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { getModelDisplayLabel } from '@/renderer/utils/model/agentLogo';
@@ -119,45 +116,19 @@ const AionrsModelSelector: React.FC<{
       droplist={
         <Menu>
           {thoughtLevel ? (
-            <>
-              <Menu.SubMenu
-                key='model'
-                triggerProps={RUNTIME_SUBMENU_TRIGGER_PROPS}
-                title={
-                  <RuntimeSelectorSubMenuTitle label={t('common.model', { defaultValue: 'Model' })} value={label} />
-                }
-              >
-                {modelListNode}
-              </Menu.SubMenu>
-              <Menu.SubMenu
-                key='thought-level'
-                triggerProps={RUNTIME_SUBMENU_TRIGGER_PROPS}
-                title={
-                  <RuntimeSelectorSubMenuTitle
-                    label={t('agent.thoughtLevel.label')}
-                    value={getCurrentThoughtLevelLabel(thoughtLevel)}
-                  />
-                }
-              >
-                {thoughtLevel.options.map((item) => (
-                  <Menu.Item
-                    key={item.value}
-                    className={item.value === thoughtLevel.currentValue ? '!bg-2' : ''}
-                    onClick={() => handleThoughtLevelSelect(item.value)}
-                  >
-                    <RuntimeSelectorCheckedItem
-                      selected={item.value === thoughtLevel.currentValue}
-                      description={item.description}
-                    >
-                      {item.label}
-                    </RuntimeSelectorCheckedItem>
-                  </Menu.Item>
-                ))}
-              </Menu.SubMenu>
-            </>
-          ) : (
-            modelListNode
-          )}
+            <div
+              className='px-12px pt-8px pb-10px border-b border-solid border-[var(--color-border-1)]'
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className='text-11.5px font-500 text-t-tertiary mb-6px'>{t('agent.thoughtLevel.label')}</div>
+              <ThinkingEffortSlider
+                options={thoughtLevel.options}
+                value={thoughtLevel.currentValue || thoughtLevel.options[0]?.value || 'auto'}
+                onChange={handleThoughtLevelSelect}
+              />
+            </div>
+          ) : null}
+          {modelListNode}
         </Menu>
       }
     >

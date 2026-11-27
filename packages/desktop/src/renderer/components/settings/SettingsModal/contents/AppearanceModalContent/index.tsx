@@ -4,11 +4,26 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Switch } from '@arco-design/web-react';
 import ScaleControl from '@/renderer/components/settings/ScaleControl';
 import CssThemeSettings from '@renderer/pages/settings/AppearanceSettings/CssThemeSettings';
 import AionScrollArea from '@/renderer/components/base/AionScrollArea';
+import { ThinkingEffortSlider } from '@/renderer/components/agent/ThinkingEffortSlider';
+import {
+  resolveModelThinkingSpec,
+  setThinkingSliderAnimationMode,
+  setThinkingSliderEnabled,
+  setThinkingSliderReachedTickStyle,
+  setThinkingSliderStyle,
+  THINKING_SLIDER_STYLES,
+  type ThinkingReachedTickStyle,
+  type ThinkingSliderAnimationMode,
+  useThinkingSliderPreferences,
+} from '@/renderer/utils/thinkingEffort';
+
+const PREVIEW_OPTIONS = resolveModelThinkingSpec('deepseek-v4.1-flash')!.options;
 import { FONT_SIZE_KEYS, FONT_SIZE_SPECS, FONT_SIZE_STEP, type FontSizeKey } from '@/common/config/fontSizes';
 import { useThemeContext } from '@renderer/hooks/context/ThemeContext';
 import { useSettingsViewMode } from '../../settingsViewContext';
@@ -62,6 +77,8 @@ const AppearanceModalContent: React.FC = () => {
   const viewMode = useSettingsViewMode();
   const isPageMode = viewMode === 'page';
   const { fontSizes, setFontSize, fontFamilies, setFontFamily, fontWeights, setFontWeight } = useThemeContext();
+  const thinkingPrefs = useThinkingSliderPreferences();
+  const [previewLevel, setPreviewLevel] = useState<string>('high');
 
   return (
     <div className='flex flex-col h-full w-full'>
@@ -107,6 +124,111 @@ const AppearanceModalContent: React.FC = () => {
               <PreferenceRow label={t('settings.scale')}>
                 <ScaleControl />
               </PreferenceRow>
+            </div>
+          </div>
+
+          {/* 思考程度滑块 / Thinking Effort Slider */}
+          <div className='px-16px md:px-24px lg:px-28px py-14px md:py-16px bg-2 rd-16px'>
+            <div className='flex flex-col gap-12px'>
+              <div className='flex items-center justify-between gap-16px'>
+                <div className='text-14px font-500 text-t-primary leading-22px'>推理深度</div>
+                <Switch checked={thinkingPrefs.enabled} onChange={setThinkingSliderEnabled} />
+              </div>
+
+              <div className='grid grid-cols-1 md:grid-cols-2 gap-10px'>
+                {THINKING_SLIDER_STYLES.map((styleMeta) => {
+                  const selected = thinkingPrefs.style === styleMeta.id;
+                  return (
+                    <button
+                      key={styleMeta.id}
+                      type='button'
+                      onClick={() => setThinkingSliderStyle(styleMeta.id)}
+                      className={`p-12px rd-12px border border-solid text-left transition-all cursor-pointer ${
+                        selected
+                          ? 'bg-base border-[#111111] dark:border-[#f5f5f7] shadow-sm'
+                          : 'bg-fill-1 hover:bg-fill-2 border-[var(--color-border-2)]'
+                      }`}
+                    >
+                      <div className='flex items-center justify-between gap-8px'>
+                        <span className='text-13px font-600 text-t-primary'>{styleMeta.name}</span>
+                        <span
+                          className={`px-7px py-2px rd-999px text-10.5px font-500 ${
+                            selected
+                              ? 'bg-[#111111] text-[#ffffff] dark:bg-[#f5f5f7] dark:text-[#111111]'
+                              : 'bg-fill-2 text-t-tertiary'
+                          }`}
+                        >
+                          {styleMeta.badge}
+                        </span>
+                      </div>
+                      <div className='text-11.5px text-t-tertiary mt-3px'>{styleMeta.description}</div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {thinkingPrefs.style === 'codex-slider' && (
+                <div className='grid grid-cols-1 md:grid-cols-2 gap-10px'>
+                  <div className='px-12px py-10px rd-10px bg-fill-1 border border-solid border-[var(--color-border-2)]'>
+                    <div className='text-12px font-500 text-t-primary mb-6px'>拖动动画</div>
+                    <div className='flex flex-wrap gap-6px'>
+                      {(
+                        [
+                          { id: 'fast', label: '快速吸附' },
+                          { id: 'smooth', label: '丝滑跟手' },
+                        ] satisfies Array<{ id: ThinkingSliderAnimationMode; label: string }>
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type='button'
+                          onClick={() => setThinkingSliderAnimationMode(opt.id)}
+                          className={`px-9px py-4px rd-999px text-11.5px border border-solid cursor-pointer ${
+                            thinkingPrefs.animationMode === opt.id
+                              ? 'bg-[#111111] text-[#ffffff] border-[#111111] dark:bg-[#f5f5f7] dark:text-[#111111] dark:border-[#f5f5f7]'
+                              : 'bg-base text-t-secondary border-[var(--color-border-2)] hover:text-t-primary'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className='px-12px py-10px rd-10px bg-fill-1 border border-solid border-[var(--color-border-2)]'>
+                    <div className='text-12px font-500 text-t-primary mb-6px'>刻度点</div>
+                    <div className='flex flex-wrap gap-6px'>
+                      {(
+                        [
+                          { id: 'highlight', label: '亮白' },
+                          { id: 'same', label: '同色' },
+                          { id: 'hidden', label: '隐藏' },
+                        ] satisfies Array<{ id: ThinkingReachedTickStyle; label: string }>
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type='button'
+                          onClick={() => setThinkingSliderReachedTickStyle(opt.id)}
+                          className={`px-9px py-4px rd-999px text-11.5px border border-solid cursor-pointer ${
+                            thinkingPrefs.reachedTickStyle === opt.id
+                              ? 'bg-[#111111] text-[#ffffff] border-[#111111] dark:bg-[#f5f5f7] dark:text-[#111111] dark:border-[#f5f5f7]'
+                              : 'bg-base text-t-secondary border-[var(--color-border-2)] hover:text-t-primary'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className='p-14px rd-12px bg-base border border-solid border-[var(--color-border-2)] flex flex-col sm:flex-row sm:items-center justify-between gap-12px'>
+                <span className='text-12px text-t-tertiary'>预览</span>
+                <ThinkingEffortSlider
+                  options={PREVIEW_OPTIONS}
+                  value={previewLevel}
+                  onChange={setPreviewLevel}
+                />
+              </div>
             </div>
           </div>
         </div>

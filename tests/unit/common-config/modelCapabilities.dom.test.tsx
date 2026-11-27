@@ -563,7 +563,13 @@ describe('model capability selectors', () => {
     fireEvent.click(screen.getByRole('button', { name: 'common.confirm' }));
 
     await waitFor(() => {
-      expect(mocks.onSubmit).toHaveBeenCalledWith(expect.objectContaining({ model_settings: {} }));
+      // With vision left on 'auto', vision-capable aliases (gpt-5.6-sol) now get
+      // image_input auto-populated; the Gemini form must still never emit openai_api_mode.
+      expect(mocks.onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model_settings: { 'gpt-5.6-sol': { image_input: 'supported' } },
+        })
+      );
     });
   });
 });

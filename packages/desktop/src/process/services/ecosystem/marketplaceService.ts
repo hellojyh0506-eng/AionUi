@@ -25,6 +25,8 @@ import type {
   MarketplaceUpdateAllResult,
   MarketplaceUpdateCheckResult,
   MarketplaceUpdateItem,
+  PluginDetailRequest,
+  PluginDetailResult,
 } from './types';
 
 const REMOTE_TIMEOUT_MS = 8000;
@@ -77,10 +79,25 @@ interface SkillsShItem {
   installs?: number;
 }
 
+export interface CachedDocsEntry {
+  fetchedAt: number;
+  markdown: string;
+}
+
 export interface MarketplaceMetaCache {
   syncedAt: number;
   repoStars: Record<string, number>;
   skillInstalls: Record<string, number>;
+  discoverMcps?: {
+    fetchedAt: number;
+    items: Array<Omit<MarketplaceMcpItem, 'installed'>>;
+    nextCursor?: string;
+  };
+  discoverSkills?: {
+    fetchedAt: number;
+    items: Array<Omit<MarketplaceSkillItem, 'installed'>>;
+  };
+  docsCache?: Record<string, CachedDocsEntry>;
 }
 
 export interface InstalledSkillTracking {
@@ -123,6 +140,9 @@ export function readMarketplaceCache(overrideDataDir?: string): MarketplaceMetaC
         syncedAt: typeof parsed.syncedAt === 'number' ? parsed.syncedAt : 0,
         repoStars: parsed.repoStars && typeof parsed.repoStars === 'object' ? parsed.repoStars : {},
         skillInstalls: parsed.skillInstalls && typeof parsed.skillInstalls === 'object' ? parsed.skillInstalls : {},
+        ...(parsed.discoverMcps && Array.isArray(parsed.discoverMcps.items) ? { discoverMcps: parsed.discoverMcps } : {}),
+        ...(parsed.discoverSkills && Array.isArray(parsed.discoverSkills.items) ? { discoverSkills: parsed.discoverSkills } : {}),
+        ...(parsed.docsCache && typeof parsed.docsCache === 'object' ? { docsCache: parsed.docsCache } : {}),
       };
     }
   } catch {
@@ -302,15 +322,124 @@ export function applyMcpConfigFields(
   return transport;
 }
 
+async function fetchMcpRegistryPage(
+  url: string,
+  existingMcpNames: Set<string>,
+  cache: MarketplaceMetaCache,
+  fetchImpl: typeof fetch
+): Promise<{ items: MarketplaceMcpItem[]; nextCursor?: string; ok: boolean }> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REMOTE_TIMEOUT_MS);
+    try {
+      const resp = await fetchImpl(url, { signal: controller.signal });
+      if (!resp.ok) {
+        return { items: [], ok: false };
+      }
+      const json = (await resp.json()) as {
+        servers?: McpRegistryServerEntry[];
+        metadata?: { nextCursor?: string; count?: number };
+      };
+      const items: MarketplaceMcpItem[] = [];
+      for (const entry of json.servers || []) {
+        const parsed = parseRegistryServerEntry(entry, existingMcpNames, cache);
+        if (parsed) items.push(parsed);
+      }
+      return {
+        items,
+        nextCursor: json.metadata?.nextCursor || undefined,
+        ok: true,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return { items: [], ok: false };
+  }
+}
+
+function stripInstalledMcpFlag(item: MarketplaceMcpItem): Omit<MarketplaceMcpItem, 'installed'> {
+  const { installed: _installed, ...rest } = item;
+  return rest;
+}
+
+function stripInstalledSkillFlag(item: MarketplaceSkillItem): Omit<MarketplaceSkillItem, 'installed'> {
+  const { installed: _installed, ...rest } = item;
+  return rest;
+}
+
+function hydrateMcpWithLocalState(
+  item: Omit<MarketplaceMcpItem, 'installed'>,
+  existingMcpNames: Set<string>,
+  cache: MarketplaceMetaCache,
+  ledger: InstalledPluginLedger
+): MarketplaceMcpItem {
+  const repoSlug = extractGitHubRepoSlug(item.repositoryUrl);
+  const stars = item.stars ?? (repoSlug ? cache.repoStars[repoSlug] : undefined);
+  const tracked = ledger.mcps[item.name];
+  return Object.assign({}, item, {
+    ...(typeof stars === 'number' ? { stars } : {}),
+    ...(tracked?.version ? { installedVersion: tracked.version } : {}),
+    installed: existingMcpNames.has(item.name),
+  });
+}
+
+function mapSkillsShRow(
+  row: SkillsShItem,
+  existingSkillNames: Set<string>,
+  cache: MarketplaceMetaCache
+): MarketplaceSkillItem | null {
+  const repo = (row.source || '').trim();
+  const skillId = (row.skillId || row.name || '').trim();
+  const name = (row.name || skillId).trim();
+  if (!repo || !skillId || !name) return null;
+  const stars = cache.repoStars[repo];
+  return {
+    id: `skills.sh:${row.id || `${repo}/${skillId}`}`,
+    name,
+    description: `来自 ${repo}（skills.sh 社区高安装量技能）`,
+    category: 'skills.sh 社区',
+    source: 'skills.sh',
+    author: repo.split('/')[0],
+    repo,
+    repositoryUrl: `https://github.com/${repo}`,
+    skillId,
+    ...(typeof stars === 'number' ? { stars } : {}),
+    installs: typeof row.installs === 'number' ? row.installs : undefined,
+    installed: existingSkillNames.has(name),
+  };
+}
+
 export async function searchMcpMarketplace(
   query: string,
   existingMcpNames: Set<string>,
   fetchImpl: typeof fetch = fetch,
-  overrideDataDir?: string
+  overrideDataDir?: string,
+  cursor?: string
 ): Promise<MarketplaceSearchMcpResult> {
   const cache = readMarketplaceCache(overrideDataDir);
   const ledger = readInstalledPluginLedger(overrideDataDir);
   const q = query.trim().toLowerCase();
+
+  if (cursor) {
+    const cursorUrl = q
+      ? `https://registry.modelcontextprotocol.io/v0.1/servers?search=${encodeURIComponent(query.trim())}&limit=80&cursor=${encodeURIComponent(cursor)}`
+      : `https://registry.modelcontextprotocol.io/v0.1/servers?limit=80&cursor=${encodeURIComponent(cursor)}`;
+    const pageRes = await fetchMcpRegistryPage(cursorUrl, existingMcpNames, cache, fetchImpl);
+    const seen = new Set<string>();
+    const deduped: MarketplaceMcpItem[] = [];
+    for (const item of pageRes.items) {
+      const lower = item.name.toLowerCase();
+      if (seen.has(lower)) continue;
+      seen.add(lower);
+      deduped.push(hydrateMcpWithLocalState(item, existingMcpNames, cache, ledger));
+    }
+    return {
+      items: deduped,
+      nextCursor: pageRes.nextCursor,
+      remoteUnavailable: !pageRes.ok,
+    };
+  }
 
   const curatedMatches: MarketplaceMcpItem[] = CURATED_MCP_CATALOG.filter(
     (item) =>
@@ -319,55 +448,145 @@ export async function searchMcpMarketplace(
       item.title.toLowerCase().includes(q) ||
       item.description.toLowerCase().includes(q) ||
       item.category.toLowerCase().includes(q)
-  ).map((item) => {
-    const repoSlug = extractGitHubRepoSlug(item.repositoryUrl);
-    const stars = repoSlug ? cache.repoStars[repoSlug] : undefined;
-    const tracked = ledger.mcps[item.name];
-    return Object.assign({}, item, {
-      ...(typeof stars === 'number' ? { stars } : {}),
-      ...(tracked?.version ? { installedVersion: tracked.version } : {}),
-      installed: existingMcpNames.has(item.name),
-    });
-  });
+  ).map((item) => hydrateMcpWithLocalState(item, existingMcpNames, cache, ledger));
 
-  if (!q) {
-    return { items: curatedMatches };
-  }
-
-  let remoteUnavailable = false;
-  const remoteItems: MarketplaceMcpItem[] = [];
   const seenNames = new Set(curatedMatches.map((i) => i.name.toLowerCase()));
 
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REMOTE_TIMEOUT_MS);
-    try {
-      const url = `https://registry.modelcontextprotocol.io/v0.1/servers?search=${encodeURIComponent(query.trim())}&limit=16`;
-      const resp = await fetchImpl(url, { signal: controller.signal });
-      if (!resp.ok) {
-        remoteUnavailable = true;
-      } else {
-        const json = (await resp.json()) as { servers?: McpRegistryServerEntry[] };
-        for (const entry of json.servers || []) {
-          const parsed = parseRegistryServerEntry(entry, existingMcpNames, cache);
-          if (!parsed) continue;
-          const lowerName = parsed.name.toLowerCase();
-          if (seenNames.has(lowerName)) continue;
-          seenNames.add(lowerName);
-          remoteItems.push(parsed);
-        }
+  if (!q) {
+    const cachedDiscover = cache.discoverMcps;
+    const isFreshDiscover =
+      cachedDiscover && Date.now() - cachedDiscover.fetchedAt < CACHE_TTL_MS && cachedDiscover.items.length > 0;
+    if (isFreshDiscover) {
+      const discoverItems: MarketplaceMcpItem[] = [];
+      for (const raw of cachedDiscover.items) {
+        const lowerName = raw.name.toLowerCase();
+        if (seenNames.has(lowerName)) continue;
+        seenNames.add(lowerName);
+        discoverItems.push(hydrateMcpWithLocalState(raw, existingMcpNames, cache, ledger));
       }
-    } finally {
-      clearTimeout(timer);
+      const items = [...curatedMatches, ...discoverItems];
+      return {
+        items,
+        nextCursor: cachedDiscover.nextCursor,
+        totalAvailable: items.length,
+      };
     }
-  } catch {
-    remoteUnavailable = true;
+
+    let remoteUnavailable = false;
+    const fetchedRaw: Array<Omit<MarketplaceMcpItem, 'installed'>> = [];
+    const seenRemote = new Set<string>();
+
+    const page1 = await fetchMcpRegistryPage(
+      'https://registry.modelcontextprotocol.io/v0.1/servers?limit=80',
+      existingMcpNames,
+      cache,
+      fetchImpl
+    );
+    if (!page1.ok) {
+      remoteUnavailable = true;
+    } else {
+      for (const item of page1.items) {
+        const lower = item.name.toLowerCase();
+        if (seenRemote.has(lower)) continue;
+        seenRemote.add(lower);
+        fetchedRaw.push(stripInstalledMcpFlag(item));
+      }
+    }
+
+    let finalNextCursor = page1.nextCursor;
+    if (page1.ok && page1.nextCursor) {
+      const page2 = await fetchMcpRegistryPage(
+        `https://registry.modelcontextprotocol.io/v0.1/servers?limit=80&cursor=${encodeURIComponent(page1.nextCursor)}`,
+        existingMcpNames,
+        cache,
+        fetchImpl
+      );
+      if (page2.ok) {
+        for (const item of page2.items) {
+          const lower = item.name.toLowerCase();
+          if (seenRemote.has(lower)) continue;
+          seenRemote.add(lower);
+          fetchedRaw.push(stripInstalledMcpFlag(item));
+        }
+        finalNextCursor = page2.nextCursor;
+      }
+    }
+
+    if (fetchedRaw.length > 0) {
+      const latestCache = readMarketplaceCache(overrideDataDir);
+      writeMarketplaceCache(
+        Object.assign({}, latestCache, {
+          discoverMcps: {
+            fetchedAt: Date.now(),
+            items: fetchedRaw,
+            ...(finalNextCursor ? { nextCursor: finalNextCursor } : {}),
+          },
+        }),
+        overrideDataDir
+      );
+    }
+
+    const sourceList = fetchedRaw.length > 0 ? fetchedRaw : cachedDiscover?.items || [];
+    const discoverItems: MarketplaceMcpItem[] = [];
+    for (const raw of sourceList) {
+      const lowerName = raw.name.toLowerCase();
+      if (seenNames.has(lowerName)) continue;
+      seenNames.add(lowerName);
+      discoverItems.push(hydrateMcpWithLocalState(raw, existingMcpNames, cache, ledger));
+    }
+
+    const items = [...curatedMatches, ...discoverItems];
+    return {
+      items,
+      ...(finalNextCursor || cachedDiscover?.nextCursor ? { nextCursor: finalNextCursor || cachedDiscover?.nextCursor } : {}),
+      totalAvailable: items.length,
+      ...(remoteUnavailable ? { remoteUnavailable } : {}),
+    };
+  }
+
+  const searchRes = await fetchMcpRegistryPage(
+    `https://registry.modelcontextprotocol.io/v0.1/servers?search=${encodeURIComponent(query.trim())}&limit=40`,
+    existingMcpNames,
+    cache,
+    fetchImpl
+  );
+  const remoteItems: MarketplaceMcpItem[] = [];
+  for (const item of searchRes.items) {
+    const lowerName = item.name.toLowerCase();
+    if (seenNames.has(lowerName)) continue;
+    seenNames.add(lowerName);
+    remoteItems.push(hydrateMcpWithLocalState(item, existingMcpNames, cache, ledger));
   }
 
   return {
     items: [...curatedMatches, ...remoteItems],
-    remoteUnavailable,
+    ...(searchRes.nextCursor ? { nextCursor: searchRes.nextCursor } : {}),
+    remoteUnavailable: !searchRes.ok,
   };
+}
+
+const DISCOVER_SKILL_TOPICS = ['agent', 'react', 'python', 'design', 'git', 'doc'];
+
+async function fetchSkillsShBatch(
+  queryTerm: string,
+  limit: number,
+  fetchImpl: typeof fetch
+): Promise<{ rows: SkillsShItem[]; ok: boolean }> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REMOTE_TIMEOUT_MS);
+    try {
+      const url = `https://skills.sh/api/search?q=${encodeURIComponent(queryTerm)}&limit=${limit}`;
+      const resp = await fetchImpl(url, { signal: controller.signal });
+      if (!resp.ok) return { rows: [], ok: false };
+      const json = (await resp.json()) as { skills?: SkillsShItem[] };
+      return { rows: json.skills || [], ok: true };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return { rows: [], ok: false };
+  }
 }
 
 export async function searchSkillsMarketplace(
@@ -395,58 +614,95 @@ export async function searchSkillsMarketplace(
     });
   });
 
+  const seenNames = new Set(curatedMatches.map((i) => i.name.toLowerCase()));
+
   if (!q) {
+    const cachedDiscover = cache.discoverSkills;
+    const isFreshDiscover =
+      cachedDiscover && Date.now() - cachedDiscover.fetchedAt < CACHE_TTL_MS && cachedDiscover.items.length > 0;
+
+    if (isFreshDiscover) {
+      const discoverItems: MarketplaceSkillItem[] = [];
+      for (const raw of cachedDiscover.items) {
+        const lower = raw.name.toLowerCase();
+        if (seenNames.has(lower)) continue;
+        seenNames.add(lower);
+        const stars = cache.repoStars[raw.repo] ?? raw.stars;
+        discoverItems.push(
+          Object.assign({}, raw, {
+            ...(typeof stars === 'number' ? { stars } : {}),
+            installed: existingSkillNames.has(raw.name),
+          })
+        );
+      }
+      return { items: [...curatedMatches, ...discoverItems] };
+    }
+
+    const batches = await Promise.all(
+      DISCOVER_SKILL_TOPICS.map((topic) => fetchSkillsShBatch(topic, 25, fetchImpl))
+    );
+    const anyOk = batches.some((b) => b.ok);
+    const fetchedMap = new Map<string, MarketplaceSkillItem>();
+    for (const batch of batches) {
+      for (const row of batch.rows) {
+        const mapped = mapSkillsShRow(row, existingSkillNames, cache);
+        if (!mapped) continue;
+        const lower = mapped.name.toLowerCase();
+        const prev = fetchedMap.get(lower);
+        if (!prev || (mapped.installs || 0) > (prev.installs || 0)) {
+          fetchedMap.set(lower, mapped);
+        }
+      }
+    }
+
+    const sortedFetched = Array.from(fetchedMap.values()).toSorted(
+      (a, b) => (b.installs || 0) - (a.installs || 0)
+    );
+    if (sortedFetched.length > 0) {
+      const latestCache = readMarketplaceCache(overrideDataDir);
+      writeMarketplaceCache(
+        Object.assign({}, latestCache, {
+          discoverSkills: {
+            fetchedAt: Date.now(),
+            items: sortedFetched.map(stripInstalledSkillFlag),
+          },
+        }),
+        overrideDataDir
+      );
+    }
+
+    const sourceList = sortedFetched.length > 0 ? sortedFetched.map(stripInstalledSkillFlag) : cachedDiscover?.items || [];
+    const discoverItems: MarketplaceSkillItem[] = [];
+    for (const raw of sourceList) {
+      const lower = raw.name.toLowerCase();
+      if (seenNames.has(lower)) continue;
+      seenNames.add(lower);
+      discoverItems.push(Object.assign({}, raw, { installed: existingSkillNames.has(raw.name) }));
+    }
+
+    return {
+      items: [...curatedMatches, ...discoverItems],
+      ...(!anyOk && sortedFetched.length === 0 ? { remoteUnavailable: true } : {}),
+    };
+  }
+
+  if (q.length < 2) {
     return { items: curatedMatches };
   }
 
-  let remoteUnavailable = false;
+  const batch = await fetchSkillsShBatch(query.trim(), 40, fetchImpl);
   const remoteItems: MarketplaceSkillItem[] = [];
-  const seenNames = new Set(curatedMatches.map((i) => i.name.toLowerCase()));
-
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REMOTE_TIMEOUT_MS);
-    try {
-      const url = `https://skills.sh/api/search?q=${encodeURIComponent(query.trim())}&limit=16`;
-      const resp = await fetchImpl(url, { signal: controller.signal });
-      if (!resp.ok) {
-        remoteUnavailable = true;
-      } else {
-        const json = (await resp.json()) as { skills?: SkillsShItem[] };
-        for (const row of json.skills || []) {
-          const repo = (row.source || '').trim();
-          const skillId = (row.skillId || row.name || '').trim();
-          const name = (row.name || skillId).trim();
-          if (!repo || !skillId || !name) continue;
-          if (seenNames.has(name.toLowerCase())) continue;
-          seenNames.add(name.toLowerCase());
-          const stars = cache.repoStars[repo];
-          remoteItems.push({
-            id: `skills.sh:${row.id || `${repo}/${skillId}`}`,
-            name,
-            description: `来自 ${repo}（skills.sh 社区高安装量技能）`,
-            category: 'skills.sh 社区',
-            source: 'skills.sh',
-            author: repo.split('/')[0],
-            repo,
-            repositoryUrl: `https://github.com/${repo}`,
-            skillId,
-            ...(typeof stars === 'number' ? { stars } : {}),
-            installs: typeof row.installs === 'number' ? row.installs : undefined,
-            installed: existingSkillNames.has(name),
-          });
-        }
-      }
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch {
-    remoteUnavailable = true;
+  for (const row of batch.rows) {
+    const mapped = mapSkillsShRow(row, existingSkillNames, cache);
+    if (!mapped) continue;
+    if (seenNames.has(mapped.name.toLowerCase())) continue;
+    seenNames.add(mapped.name.toLowerCase());
+    remoteItems.push(mapped);
   }
 
   return {
     items: [...curatedMatches, ...remoteItems],
-    remoteUnavailable,
+    remoteUnavailable: !batch.ok,
   };
 }
 
@@ -545,11 +801,11 @@ export async function syncMarketplaceMetadata(
     }
 
     writeMarketplaceCache(
-      {
+      Object.assign({}, prevCache, {
         syncedAt: Date.now(),
         repoStars,
         skillInstalls,
-      },
+      }),
       options.overrideDataDir
     );
   }
@@ -965,4 +1221,159 @@ export async function updateAllMarketplacePlugins(options: {
   }
 
   return { updatedCount, failed };
+}
+
+const MAX_README_BYTES = 200 * 1024;
+
+async function fetchRawGitHubReadme(slug: string, fetchImpl: typeof fetch): Promise<string | undefined> {
+  const tryBranch = async (branch: string): Promise<string | undefined> => {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), REMOTE_TIMEOUT_MS);
+      try {
+        const resp = await fetchImpl(`https://raw.githubusercontent.com/${slug}/${branch}/README.md`, {
+          signal: controller.signal,
+        });
+        if (!resp.ok) return undefined;
+        const text = await resp.text();
+        if (!text.trim()) return undefined;
+        return text.length > MAX_README_BYTES ? `${text.slice(0, MAX_README_BYTES)}\n\n...` : text;
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      return undefined;
+    }
+  };
+
+  return (await tryBranch('HEAD')) ?? (await tryBranch('main')) ?? (await tryBranch('master'));
+}
+
+/**
+ * Resolve rich documentation (`SKILL.md`, GitHub `README.md`, or curated guides & prompts)
+ * for a marketplace card or installed plugin detail view.
+ */
+export async function getPluginDetails(
+  req: PluginDetailRequest,
+  options: {
+    fetchImpl?: typeof fetch;
+    overrideDataDir?: string;
+    getUserSkillsDir?: () => Promise<string | undefined>;
+    overrideUserSkillsDir?: string;
+  } = {}
+): Promise<PluginDetailResult> {
+  const fetchImpl = options.fetchImpl || fetch;
+  const curatedMcp = req.kind === 'mcp' ? CURATED_MCP_CATALOG.find((m) => m.name === req.name || m.id === req.id) : undefined;
+  const curatedSkill =
+    req.kind === 'skill' ? CURATED_SKILL_CATALOG.find((s) => s.name === req.name || s.id === req.id) : undefined;
+
+  const usageGuide = curatedMcp?.usageGuide ?? curatedSkill?.usageGuide;
+  const examplePrompts = curatedMcp?.examplePrompts ?? curatedSkill?.examplePrompts;
+
+  if (req.kind === 'skill' && SAFE_SEGMENT_RE.test(req.name)) {
+    try {
+      const userSkillsDir =
+        options.overrideUserSkillsDir ?? (options.getUserSkillsDir ? await options.getUserSkillsDir() : undefined);
+      if (userSkillsDir) {
+        const localSkillFile = path.join(userSkillsDir, req.name, 'SKILL.md');
+        if (fs.existsSync(localSkillFile)) {
+          const localMarkdown = fs.readFileSync(localSkillFile, 'utf-8');
+          if (localMarkdown.trim()) {
+            return {
+              readmeMarkdown: localMarkdown,
+              usageGuide,
+              examplePrompts,
+              resolvedFrom: 'local-skill',
+            };
+          }
+        }
+      }
+    } catch {
+      // fall through to cache / remote
+    }
+  }
+
+  const cacheKey = `${req.kind}:${req.id || req.name}`;
+  const cache = readMarketplaceCache(options.overrideDataDir);
+  const cachedDoc = cache.docsCache?.[cacheKey];
+  if (cachedDoc && Date.now() - cachedDoc.fetchedAt < CACHE_TTL_MS && cachedDoc.markdown.trim()) {
+    return {
+      readmeMarkdown: cachedDoc.markdown,
+      usageGuide,
+      examplePrompts,
+      resolvedFrom: req.kind === 'skill' ? 'github-skill' : 'github-readme',
+    };
+  }
+
+  if (req.kind === 'skill') {
+    const repo = req.repo || curatedSkill?.repo;
+    const skillId = req.skillId || curatedSkill?.skillId || req.name;
+    const rawPath = req.rawPath || curatedSkill?.rawPath;
+    if (repo) {
+      try {
+        const downloaded = await downloadSkillMarkdownFromGitHub(
+          {
+            repo,
+            skillId,
+            rawPath,
+            customName: req.name,
+          },
+          fetchImpl
+        );
+        const latestCache = readMarketplaceCache(options.overrideDataDir);
+        writeMarketplaceCache(
+          Object.assign({}, latestCache, {
+            docsCache: Object.assign({}, latestCache.docsCache || {}, {
+              [cacheKey]: { fetchedAt: Date.now(), markdown: downloaded.markdown },
+            }),
+          }),
+          options.overrideDataDir
+        );
+        return {
+          readmeMarkdown: downloaded.markdown,
+          usageGuide,
+          examplePrompts,
+          resolvedFrom: 'github-skill',
+        };
+      } catch {
+        // fallback to repo README below
+      }
+    }
+  }
+
+  const repoUrl = req.repositoryUrl || curatedMcp?.repositoryUrl || curatedSkill?.repositoryUrl;
+  const slug = extractGitHubRepoSlug(repoUrl) || (req.repo && /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(req.repo) ? req.repo : null);
+  if (slug) {
+    const readmeMarkdown = await fetchRawGitHubReadme(slug, fetchImpl);
+    if (readmeMarkdown) {
+      const latestCache = readMarketplaceCache(options.overrideDataDir);
+      writeMarketplaceCache(
+        Object.assign({}, latestCache, {
+          docsCache: Object.assign({}, latestCache.docsCache || {}, {
+            [cacheKey]: { fetchedAt: Date.now(), markdown: readmeMarkdown },
+          }),
+        }),
+        options.overrideDataDir
+      );
+      return {
+        readmeMarkdown,
+        usageGuide,
+        examplePrompts,
+        resolvedFrom: 'github-readme',
+      };
+    }
+  }
+
+  if (usageGuide) {
+    return {
+      usageGuide,
+      examplePrompts,
+      resolvedFrom: 'curated',
+    };
+  }
+
+  return {
+    readmeMarkdown: `### ${req.name}\n\n暂无在线 README 正文，${repoUrl ? `可前往源码仓库查看详细文档：[${repoUrl}](${repoUrl})` : '可在上方参数区填写配置并点击“检测运行状态”验证可用工具。'}`,
+    resolvedFrom: 'fallback',
+  };
 }

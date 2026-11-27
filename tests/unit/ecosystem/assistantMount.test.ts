@@ -82,8 +82,15 @@ describe('normalizeTransportForBackend', () => {
       headers: { Authorization: 'Bearer abc' },
     });
 
-    const stdio = { type: 'stdio' as const, command: 'npx', args: ['-y', 'demo'] };
-    expect(normalizeTransportForBackend(stdio)).toEqual(stdio);
+    const customStdio = { type: 'stdio' as const, command: 'custom-mcp-binary', args: ['--port', '8080'] };
+    expect(normalizeTransportForBackend(customStdio)).toEqual(customStdio);
+
+    const npxStdio = normalizeTransportForBackend({ type: 'stdio' as const, command: 'npx', args: ['-y', 'demo'] });
+    expect(npxStdio.type).toBe('stdio');
+    if (npxStdio.type === 'stdio') {
+      expect(npxStdio.args).toEqual(['-y', 'demo']);
+      expect(npxStdio.command.toLowerCase()).toContain('npx');
+    }
   });
 });
 

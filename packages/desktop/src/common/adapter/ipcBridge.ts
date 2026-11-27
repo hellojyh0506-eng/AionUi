@@ -98,6 +98,10 @@ import type { AgentMetadata } from '@/renderer/utils/model/agentTypes';
 import type { Theme } from '@/common/theme/types';
 import type { AttachFolderRequest, ProjectDetailDto, ProjectEntryDto } from '@/common/types/project';
 import type { ChatFileRef, ContentEncoding } from '@/common/types/chatFile';
+import {
+  shouldWrapProviderForThinking,
+  unwrapProviderBaseUrl,
+} from '@/common/utils/thinkingGatewayUrl';
 import type { ProtocolDetectionRequest, ProtocolDetectionResponse } from '../utils/protocolDetector';
 import {
   buildCreateConversationBody,
@@ -1091,16 +1095,45 @@ export const bedrock = {
 // Mode (Provider management) — routed to /api/providers/*
 // ---------------------------------------------------------------------------
 
+async function wrapProviderPayloadUrl(url?: string, platform?: string): Promise<string | undefined> {
+  if (typeof url !== 'string' || !url.trim()) return url;
+  if (!shouldWrapProviderForThinking({ platform, base_url: url })) return url;
+  try {
+    const res = await thinkingEffort.wrapUrl.invoke({ url });
+    return res?.url || url;
+  } catch {
+    return url;
+  }
+}
+
 export const mode = {
-  listProviders: httpGet<IProvider[], void>('/api/providers'),
-  createProvider: httpPost<IProvider, CreateProviderRequest>('/api/providers'),
-  updateProvider: httpPut<IProvider, { id: string } & UpdateProviderRequest>(
-    (p) => `/api/providers/${p.id}`,
-    (p) => {
-      const { id: _id, ...body } = p;
-      return body;
-    }
+  listProviders: withResponseMap(httpGet<IProvider[], void>('/api/providers'), (list) =>
+    Array.isArray(list) ? list.map(unwrapProviderBaseUrl) : list
   ),
+  createProvider: {
+    provider: () => {},
+    invoke: (async (params: CreateProviderRequest) => {
+      const wrappedUrl = await wrapProviderPayloadUrl(params.base_url, params.platform);
+      const created = await httpRequest<IProvider>('POST', '/api/providers', {
+        ...params,
+        ...(typeof wrappedUrl === 'string' ? { base_url: wrappedUrl } : {}),
+      });
+      return unwrapProviderBaseUrl(created);
+    }) as (params: CreateProviderRequest) => Promise<IProvider>,
+  },
+  updateProvider: {
+    provider: () => {},
+    invoke: (async (params: { id: string } & UpdateProviderRequest) => {
+      const { id, ...body } = params;
+      const wrappedUrl =
+        typeof body.base_url === 'string' ? await wrapProviderPayloadUrl(body.base_url, body.platform) : body.base_url;
+      const updated = await httpRequest<IProvider>('PUT', `/api/providers/${id}`, {
+        ...body,
+        ...(typeof wrappedUrl === 'string' ? { base_url: wrappedUrl } : {}),
+      });
+      return unwrapProviderBaseUrl(updated);
+    }) as (params: { id: string } & UpdateProviderRequest) => Promise<IProvider>,
+  },
   deleteProvider: httpDelete<void, { id: string }>((p) => `/api/providers/${p.id}`),
   fetchProviderModels: httpPost<FetchModelsResponse, { id: string; try_fix?: boolean }>(
     (p) => `/api/providers/${p.id}/models`,
@@ -1619,6 +1652,22 @@ export const ethantoken = {
   switchAccount: desktopHybridProvider<EthanTokenAccountState, { userId: number }>('ethantoken:switch-account'),
 };
 
+export const thinkingEffort = {
+  setModelEffort: desktopHybridProvider<{ ok: boolean }, { model: string; effort: string }>(
+    'thinking-effort:set-model-effort'
+  ),
+  syncPreferences: desktopHybridProvider<
+    { ok: boolean },
+    { enabled: boolean; modelLevels: Record<string, string> }
+  >('thinking-effort:sync-preferences'),
+  wrapUrl: desktopHybridProvider<{ url: string }, { url: string }>('thinking-effort:wrap-url'),
+  reconcileProviders: desktopHybridProvider<{ wrappedCount: number }, void>('thinking-effort:reconcile-providers'),
+  getStatus: desktopHybridProvider<
+    { active: boolean; port: number | null; enabled: boolean; modelLevels: Record<string, string> },
+    void
+  >('thinking-effort:get-status'),
+};
+
 export const ecosystem = {
   scanClients: desktopHybridProvider<import('@/common/types/ecosystem').ClientScanReport, void>(
     'ecosystem:scan-clients'
@@ -1636,7 +1685,7 @@ export const ecosystem = {
   >('ecosystem:save-global-memory'),
   searchMcpMarketplace: desktopHybridProvider<
     import('@/common/types/ecosystem').MarketplaceSearchMcpResult,
-    { query?: string }
+    { query?: string; cursor?: string }
   >('ecosystem:search-mcp-marketplace'),
   installMcpFromMarketplace: desktopHybridProvider<
     import('@/common/types/ecosystem').InstallMcpResult,
@@ -1664,6 +1713,62 @@ export const ecosystem = {
     import('@/common/types/ecosystem').AttachResourcesResult,
     import('@/common/types/ecosystem').AttachResourcesRequest
   >('ecosystem:attach-to-all-assistants'),
+  getPluginDetails: desktopHybridProvider<
+    import('@/common/types/ecosystem').PluginDetailResult,
+    import('@/common/types/ecosystem').PluginDetailRequest
+  >('ecosystem:get-plugin-details'),
+  getRuntimeStatus: desktopHybridProvider<import('@/common/types/ecosystem').RuntimeEnvironmentReport, void>(
+    'ecosystem:get-runtime-status'
+  ),
+  installManagedUv: desktopHybridProvider<import('@/common/types/ecosystem').InstallRuntimeResult, void>(
+    'ecosystem:install-managed-uv'
+  ),
+};
+
+export const knowledge = {
+  listCollections: desktopHybridProvider<import('@/common/types/knowledge').KnowledgeCollection[], void>(
+    'knowledge:list-collections'
+  ),
+  getCollectionDetail: desktopHybridProvider<
+    import('@/common/types/knowledge').KnowledgeCollectionDetail | null,
+    { collectionId: string }
+  >('knowledge:get-collection-detail'),
+  createCollection: desktopHybridProvider<
+    import('@/common/types/knowledge').KnowledgeCollection,
+    import('@/common/types/knowledge').CreateKnowledgeCollectionRequest
+  >('knowledge:create-collection'),
+  deleteCollection: desktopHybridProvider<boolean, { collectionId: string }>('knowledge:delete-collection'),
+  addSources: desktopHybridProvider<
+    import('@/common/types/knowledge').AddKnowledgeSourcesResult,
+    import('@/common/types/knowledge').AddKnowledgeSourcesRequest
+  >('knowledge:add-sources'),
+  removeDocument: desktopHybridProvider<
+    import('@/common/types/knowledge').KnowledgeCollection | null,
+    import('@/common/types/knowledge').RemoveKnowledgeDocumentRequest
+  >('knowledge:remove-document'),
+  reindexCollection: desktopHybridProvider<
+    import('@/common/types/knowledge').AddKnowledgeSourcesResult,
+    import('@/common/types/knowledge').ReindexKnowledgeCollectionRequest
+  >('knowledge:reindex-collection'),
+  search: desktopHybridProvider<
+    import('@/common/types/knowledge').SearchKnowledgeResult,
+    import('@/common/types/knowledge').SearchKnowledgeRequest
+  >('knowledge:search'),
+  readDocument: desktopHybridProvider<
+    import('@/common/types/knowledge').ReadKnowledgeDocumentResult,
+    import('@/common/types/knowledge').ReadKnowledgeDocumentRequest
+  >('knowledge:read-document'),
+};
+
+export const mcpApps = {
+  readUiResource: desktopHybridProvider<
+    import('@/common/types/mcpApps').ReadMcpAppResourceResult,
+    import('@/common/types/mcpApps').ReadMcpAppResourceRequest
+  >('mcp-apps:read-ui-resource'),
+  callTool: desktopHybridProvider<
+    import('@/common/types/mcpApps').CallMcpAppToolResult,
+    import('@/common/types/mcpApps').CallMcpAppToolRequest
+  >('mcp-apps:call-tool'),
 };
 
 // ---------------------------------------------------------------------------

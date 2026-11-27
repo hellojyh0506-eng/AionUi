@@ -1,4 +1,5 @@
 import type { FileOrFolderItem } from '@/renderer/utils/file/fileTypes';
+import { getActiveAtKnowledgeQuery } from './atKnowledgeQuery';
 import { getActiveAtSessionQuery } from './atSessionQuery';
 
 /**
@@ -68,7 +69,7 @@ export function getActiveAtFileQuery(value: string, caretPosition: number): Acti
   // (its previous char is `@`, which is not in AT_FILE_BOUNDARY_RE) and anchors
   // on the FIRST `@`, producing the file query `@auth` — a search for a file
   // literally named `@auth`.
-  if (getActiveAtSessionQuery(value, caretPosition)) {
+  if (getActiveAtSessionQuery(value, caretPosition) || getActiveAtKnowledgeQuery(value, caretPosition)) {
     return null;
   }
 
